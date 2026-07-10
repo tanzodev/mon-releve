@@ -16,6 +16,7 @@ body{min-height:100%;min-height:100dvh;width:100%;overflow-x:hidden;color:#fff;b
 #status-bg{position:fixed;top:0;left:0;right:0;height:env(safe-area-inset-top);background:linear-gradient(180deg,rgba(255,255,255,.07),rgba(255,255,255,.04));backdrop-filter:blur(32px);-webkit-backdrop-filter:blur(32px);z-index:60}
 #root{min-height:100vh;min-height:100dvh;padding-top:env(safe-area-inset-top);padding-left:env(safe-area-inset-left);padding-right:env(safe-area-inset-right);padding-bottom:env(safe-area-inset-bottom)}
 select{-webkit-appearance:none;appearance:none;background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath d='M3 5l3 3 3-3' fill='none' stroke='rgba(255,255,255,.5)' stroke-width='1.5'/%3E%3C/svg%3E");background-repeat:no-repeat;background-position:right 14px center}
+option{background:#1a2332;color:#e2e8f0}
 @media print{
 *{-webkit-print-color-adjust:exact!important;print-color-adjust:exact!important;color-adjust:exact!important}
 html,body{background:#fff!important;color:#000!important;margin:0!important;padding:0!important}
@@ -41,19 +42,39 @@ const { useState, useEffect, useCallback, useMemo, useRef } = React;
 
 /*
  * ╔═══════════════════════════════════════════════╗
- * ║  MON RELEVÉ — v1.0                            ║
- * ║  Première version stable · Test terrain       ║
+ * ║  MON RELEVÉ — v2.0                            ║
+ * ║  Compteur report · PDF · Absences valorisées  ║
  * ╚═══════════════════════════════════════════════╝
  */
-const VERSION = "1.0";
+const VERSION = "2.0";
+const REPORT_WEEK_CAP = 180; // ±3h en minutes
+const REPORT_GLOBAL_CAP = 360; // ±6h en minutes
+const MOTIFS_VALORISES = ["Congé payé","Férié"];
+function objJour(ct){return ct==="CDI — 39h"?468:420;} // objectif journalier travaillé : 7h48 ou 7h
+function absAffJour(ct){return ct==="CDI — 39h"?480:420;} // valorisation CYFAC : 8h ou 7h (PDF uniquement)
+function calcReport(jours,contrat,cfg){
+  const objM=(H_OBJ[contrat]||DEF_OBJ)*60;const dv=objJour(contrat);const dvAbs=absAffJour(contrat);
+  let travaille=0,neutre=0,valorisePDF=0;
+  jours.forEach(j=>{
+    if(!j.absence){travaille+=cNet(j.arrivee,j.depart,cfg);}
+    else{
+      const mult=j.demiJournee?0.5:1;
+      if(j.demiJournee){travaille+=cNet(j.arrivee,j.depart,cfg);}
+      neutre+=Math.round(dv*mult);
+      if(MOTIFS_VALORISES.includes(j.motif)){valorisePDF+=Math.round(dvAbs*mult);}
+    }
+  });
+  const objAjuste=objM-neutre;const total=travaille;const ecart=total-objAjuste;
+  return{travaille,valorise:0,neutre,objAjuste,total,ecart,valorisePDF};
+}
 
 // ── Constants ──
 const TOAST_MS = 2000, DL_MS = 1000, MS_DAY = 864e5, DEF_OBJ = 35;
 const D_PM_H = "10:00", D_PM_F = "10:15", D_PD_D = "12:30", D_PD_F = "13:15";
 const JOURS = ["Lundi","Mardi","Mercredi","Jeudi","Vendredi"];
-const MOTIFS = ["Congé payé","RTT","Férié","Maladie","Sans solde","Formation","Autre"];
-const CONTRATS = ["CDI — 35h","CDI — 39h","CDI — Temps partiel","CDD","CDD — Temps partiel","Apprentissage","Intérim","Autre"];
-const H_OBJ = {"CDI — 35h":35,"CDI — 39h":39,"CDI — Temps partiel":28,CDD:35,"CDD — Temps partiel":28,Apprentissage:35,Intérim:35,Autre:35};
+const MOTIFS = ["Congé payé","Férié","Maladie","Sans solde","Autre"];
+const CONTRATS = ["CDI — 35h","CDI — 39h"];
+const H_OBJ = {"CDI — 35h":35,"CDI — 39h":39};
 const MOIS = ["Janvier","Février","Mars","Avril","Mai","Juin","Juillet","Août","Septembre","Octobre","Novembre","Décembre"];
 const MOIS_C = ["jan.","fév.","mars","avr.","mai","juin","juil.","août","sept.","oct.","nov.","déc."];
 const MOIS_U = ["JANVIER","FÉVRIER","MARS","AVRIL","MAI","JUIN","JUILLET","AOÛT","SEPTEMBRE","OCTOBRE","NOVEMBRE","DÉCEMBRE"];
@@ -96,14 +117,55 @@ function hNow(){const d=new Date();return`${String(d.getHours()).padStart(2,"0")
 
 // ── Storage ──
 const PX="mr_";
-const vide=s=>({cle:cleS(s),valide:false,valideA:null,notes:"",jours:Array.from({length:5},()=>({arrivee:"",depart:"",absence:false,motif:"",motifAutre:""}))});
-function ldSem(c,n){try{const r=localStorage.getItem(`${PX}${n}_${c}`);if(r){const d=JSON.parse(r);return{cle:d.cle||d.key||c,valide:d.valide!==undefined?d.valide:!!d.v,valideA:d.valideA||d.at||null,notes:d.notes||"",jours:(d.jours||d.days||[]).map(j=>({arrivee:j.arrivee||j.a||"",depart:j.depart||j.d||"",absence:j.absence!==undefined?j.absence:!!j.abs,motif:j.motif||j.mot||"",motifAutre:j.motifAutre||j.motA||""}))};}}catch(e){console.warn(e);}return null;}
+const vide=s=>({cle:cleS(s),valide:false,valideA:null,notes:"",report:null,jours:Array.from({length:5},()=>({arrivee:"",depart:"",absence:false,motif:"",motifAutre:"",demiJournee:false}))});
+function ldSem(c,n){try{const r=localStorage.getItem(`${PX}${n}_${c}`);if(r){const d=JSON.parse(r);return{cle:d.cle||d.key||c,valide:d.valide!==undefined?d.valide:!!d.v,valideA:d.valideA||d.at||null,notes:d.notes||"",report:d.report||null,jours:(d.jours||d.days||[]).map(j=>({arrivee:j.arrivee||j.a||"",depart:j.depart||j.d||"",absence:j.absence!==undefined?j.absence:!!j.abs,motif:j.motif||j.mot||"",motifAutre:j.motifAutre||j.motA||"",demiJournee:!!j.demiJournee}))};}}catch(e){console.warn(e);}return null;}
 function svSem(c,n,d){try{localStorage.setItem(`${PX}${n}_${c}`,JSON.stringify(d));}catch(e){console.warn(e);}}
 function delSem(c,n){try{localStorage.removeItem(`${PX}${n}_${c}`);}catch{}}
+function ldCounter(){try{const v=localStorage.getItem(`${PX}report_counter`);return v?parseInt(v):0;}catch{return 0;}}
+function svCounter(v){try{localStorage.setItem(`${PX}report_counter`,String(v));}catch{}}
+function recalcCounter(n){
+  const cfg=ldProf();
+  const weeks=allSem(n).filter(w=>w.data&&w.data.valide).sort((a,b)=>a.cle.localeCompare(b.cle));
+  let cnt=0;
+  weeks.forEach(w=>{
+    const rpt=calcReport(w.data.jours,cfg.contrat,cfg);
+    const reportable=Math.max(-REPORT_WEEK_CAP,Math.min(REPORT_WEEK_CAP,rpt.ecart));
+    const apres=Math.max(-REPORT_GLOBAL_CAP,Math.min(REPORT_GLOBAL_CAP,cnt+reportable));
+    const applique=apres-cnt;
+    w.data.report={avant:cnt,ecart:rpt.ecart,applique,apres,travaille:rpt.travaille,valorise:0,neutre:rpt.neutre,objAjuste:rpt.objAjuste,valoPDF:rpt.valorisePDF};
+    svSem(w.cle,n,w.data);
+    cnt=apres;
+  });
+  svCounter(cnt);
+  return cnt;
+}
 function ldProf(){try{const r=localStorage.getItem(`${PX}prof`);if(r){const p=JSON.parse(r);const matH=p.pauseMatinHeure||D_PM_H;let matF=p.pauseMatinFin;if(!matF&&p.pauseMatinDuree!==undefined){const mf=t2m(matH)+p.pauseMatinDuree;matF=`${String(Math.floor(mf/60)).padStart(2,"0")}:${String(mf%60).padStart(2,"0")}`;}return{nom:p.nom||p.name||"",contrat:p.contrat||"",entreprise:p.entreprise||p.co||"",pointageRapide:p.pointageRapide!==undefined?p.pointageRapide:(p.quickStamp!==undefined?p.quickStamp:true),pauseMatinHeure:matH,pauseMatinFin:matF||D_PM_F,pauseMidiDebut:p.pauseMidiDebut||D_PD_D,pauseMidiFin:p.pauseMidiFin||D_PD_F};}}catch{}return{nom:"",contrat:"",entreprise:"",pointageRapide:true,pauseMatinHeure:D_PM_H,pauseMatinFin:D_PM_F,pauseMidiDebut:D_PD_D,pauseMidiFin:D_PD_F};}
 function svProf(p){try{localStorage.setItem(`${PX}prof`,JSON.stringify(p));}catch{}}
 function allSem(n){try{const pfx=`${PX}${n}_`;return Object.keys(localStorage).filter(k=>k.startsWith(pfx)).map(k=>{const c=k.slice(pfx.length);return{cle:c,data:ldSem(c,n)};}).filter(w=>w.data).sort((a,b)=>b.cle.localeCompare(a.cle));}catch{return[];}}
-function mStats(n,ct,semNum,cfg){const now=new Date();const mo=now.getMonth(),yr=now.getFullYear();const obj=(H_OBJ[ct]||DEF_OBJ)*60;return allSem(n).filter(({cle})=>{const l=getLunCle(cle);return l.getFullYear()===yr&&l.getMonth()===mo;}).map(({cle,data})=>{const tot=data.jours.reduce((s,j)=>j.absence?s:s+cNet(j.arrivee,j.depart,cfg),0);const abs=data.jours.filter(j=>j.absence);const absMotifs={};abs.forEach(j=>{const m=j.motif==="Autre"?(j.motifAutre||"Autre"):(j.motif||"Non précisé");absMotifs[m]=(absMotifs[m]||0)+1;});const num=parseInt(cle.split("-S")[1]);return{num,tot,obj,diff:tot-obj,v:!!data.valide,cur:num===semNum,absCount:abs.length,absMotifs};}).sort((a,b)=>a.num-b.num);}
+function mStats(n,ct,semNum,cfg){
+  const now=new Date();const mo=now.getMonth(),yr=now.getFullYear();
+  const dailyObj=((H_OBJ[ct]||DEF_OBJ)*60)/5;const dv=objJour(ct);
+  const results=[];
+  allSem(n).forEach(({cle,data})=>{
+    const lun=getLunCle(cle);const num=parseInt(cle.split("-S")[1]);
+    let daysIn=0,tot=0,absCount=0,neutreM=0;const absMotifs={};
+    data.jours.forEach((j,i)=>{
+      const day=new Date(lun);day.setDate(day.getDate()+i);
+      if(day.getMonth()!==mo||day.getFullYear()!==yr)return;
+      daysIn++;
+      if(j.absence){
+        const mult=j.demiJournee?0.5:1;absCount+=mult;
+        const m=j.motif==="Autre"?(j.motifAutre||"Autre"):(j.motif||"Non précisé");absMotifs[m]=(absMotifs[m]||0)+mult;
+        if(j.demiJournee){tot+=cNet(j.arrivee,j.depart,cfg);}
+        neutreM+=Math.round(dv*mult);
+      }else{tot+=cNet(j.arrivee,j.depart,cfg);}
+    });
+    if(daysIn===0)return;
+    const obj=Math.round(daysIn*dailyObj)-neutreM;
+    results.push({num,tot,obj,diff:tot-obj,v:!!data.valide,cur:num===semNum,absCount,absMotifs,daysIn});
+  });
+  return results.sort((a,b)=>a.num-b.num);
+}
 
 // ── Time history (frequent times) ──
 function ldHist(){try{const r=localStorage.getItem(`${PX}thist`);return r?JSON.parse(r):[];}catch{return[];}}
@@ -151,7 +213,7 @@ function TimeInput({value,onChange,label,noHistory}){
     <div style={{position:"relative"}}>
       {label&&<div style={st.iL}>{label}</div>}
       <div style={{position:"relative",display:"flex",alignItems:"center"}}>
-        <input ref={inputRef} type="text" inputMode="numeric" value={displayVal}
+        <input ref={inputRef} type="text" inputMode="numeric" autoComplete="off" value={displayVal}
           onFocus={handleFocus} onBlur={handleBlur} onChange={handleChange} onKeyDown={handleKeyDown}
           style={{...st.tI,color:hasVal?P.text:P.dim,fontVariantNumeric:"tabular-nums",paddingRight:hasVal&&focused?32:12,...(err?{borderColor:P.red}:{})}}
         />
@@ -179,30 +241,58 @@ window.MonReleve=function MonReleve(){
   const[pop,setPop]=useState(false);
   const[arch,setArch]=useState(null);
   const[cfDel,setCfDel]=useState(false);
+  const[cfUnlock,setCfUnlock]=useState(false);
   const[rk,setRk]=useState(0);
   const[peOpen,setPeOpen]=useState(false);
   const[notesOpen,setNotesOpen]=useState(false);
+  const[detailMois,setDetailMois]=useState(false);
+  const[relOpen,setRelOpen]=useState(false);
+  const[aideOpen,setAideOpen]=useState(false);
+  const[aideSec,setAideSec]=useState({});
+  const toggleAide=id=>setAideSec(s=>({...s,[id]:!s[id]}));
+  const[privOpen,setPrivOpen]=useState(false);
+  const[savOpen,setSavOpen]=useState(false);
+  const[pdfMois,setPdfMois]=useState(null);
   const[lastBackup,setLastBackup]=useState(()=>{try{return localStorage.getItem(`${PX}last_backup`)||null;}catch{return null;}});
 
   const{s:sem,l:lun}=semOff(off);
   const ck=cleS(sem),ven=new Date(lun.getTime()+4*MS_DAY),cur=off===0,ti=tIdx();
-  const objM=(H_OBJ[pr.contrat]||DEF_OBJ)*60;
   const isWeekend=ti<0&&cur;
 
   useEffect(()=>{if(ok&&pr.nom)setWd(ldSem(ck,pr.nom)||vide(sem));},[ck,pr.nom,ok,rk,sem.n,sem.y]);
+  // Recalcule le compteur au chargement
+  useEffect(()=>{if(ok&&pr.nom)recalcCounter(pr.nom);},[ok,pr.nom]);
 
   const sv=useCallback(d=>{setWd(d);svSem(ck,pr.nom,d);},[ck,pr.nom]);
   const toastRef=useRef(null);
   const flash=m=>{setMsg(m);if(toastRef.current)clearTimeout(toastRef.current);toastRef.current=setTimeout(()=>setMsg(""),TOAST_MS);};
   useEffect(()=>()=>{if(toastRef.current)clearTimeout(toastRef.current);},[]);
-  const mj=(i,f,v)=>{if(!wd)return;const nj=wd.jours.map((j,k)=>{if(k!==i)return j;const u={...j,[f]:v};if(f==="absence"&&!v){u.motif="";u.motifAutre="";}return u;});sv({...wd,jours:nj});};
+  const mj=(i,f,v)=>{if(!wd)return;const nj=wd.jours.map((j,k)=>{if(k!==i)return j;const u={...j,[f]:v};if(f==="absence"&&!v){u.motif="";u.motifAutre="";u.demiJournee=false;}return u;});sv({...wd,jours:nj});};
   const pointer=(i,f)=>{mj(i,f,hNow());flash(`${f==="arrivee"?"Arrivée":"Départ"} ${hNow()}`);};
-  const valider=()=>{if(!wd)return;sv({...wd,valide:true,valideA:new Date().toISOString()});setPop(true);flash("Semaine validée ✓");};
+  const valider=()=>{
+    if(!wd)return;
+    const avant=ldCounter();
+    const rpt=calcReport(wd.jours,pr.contrat,pr);
+    const reportable=Math.max(-REPORT_WEEK_CAP,Math.min(REPORT_WEEK_CAP,rpt.ecart));
+    const apres=Math.max(-REPORT_GLOBAL_CAP,Math.min(REPORT_GLOBAL_CAP,avant+reportable));
+    const applique=apres-avant;
+    const report={avant,ecart:rpt.ecart,applique,apres,travaille:rpt.travaille,valorise:0,neutre:rpt.neutre,objAjuste:rpt.objAjuste,valoPDF:rpt.valorisePDF};
+    svCounter(apres);
+    sv({...wd,valide:true,valideA:new Date().toISOString(),report});
+    setPop(true);flash("Semaine validée ✓");
+  };
+  const deverrouiller=()=>{
+    if(!wd||!wd.valide)return;
+    sv({...wd,valide:false,valideA:null,report:null});
+    recalcCounter(pr.nom);
+    flash("Relevé déverrouillé");
+  };
   const setNotes=v=>{if(!wd)return;sv({...wd,notes:v});};
 
   const totMin=wd?wd.jours.reduce((s,j)=>j.absence?s:s+cNet(j.arrivee,j.depart,pr),0):0;
+  const curReport=wd?calcReport(wd.jours,pr.contrat,pr):null;
   const hasD=wd&&wd.jours.some(j=>j.arrivee||j.depart||j.absence);
-  const pct=Math.min(100,Math.round(totMin/objM*100));
+  const pct=curReport&&curReport.objAjuste>0?Math.min(100,Math.round(curReport.total/curReport.objAjuste*100)):0;
   const prenom=(pr.nom||"").split(" ")[0]||pr.nom;
   const showQ=pr.pointageRapide!==false;
 
@@ -228,54 +318,75 @@ window.MonReleve=function MonReleve(){
     if(navigator.share&&navigator.canShare){try{const file=new File([blob],nomFichier,{type:"application/json"});if(navigator.canShare({files:[file]})){await navigator.share({files:[file]});enrDate();flash("Sauvegarde ✓");return;}}catch(e){if(e.name==="AbortError")return;}}
     const a=document.createElement("a");const url=URL.createObjectURL(blob);a.href=url;a.download=nomFichier;document.body.appendChild(a);a.click();document.body.removeChild(a);setTimeout(()=>URL.revokeObjectURL(url),DL_MS);enrDate();flash("Sauvegarde ✓");
   };
-  const restaurer=()=>{const inp=document.createElement("input");inp.type="file";inp.accept=".json,application/json";inp.style.cssText="position:fixed;top:-9999px;left:-9999px;opacity:0";document.body.appendChild(inp);inp.onchange=e=>{const f=e.target.files[0];if(!f){document.body.removeChild(inp);return;}const r=new FileReader();r.onload=ev=>{try{const d=JSON.parse(ev.target.result);if(!d||typeof d!=="object"||!d.profile||typeof d.profile!=="object"||!Array.isArray(d.weeks))throw new Error("!");const pn=d.profile.nom||d.profile.name;if(!pn||typeof pn!=="string"||!pn.trim())throw new Error("!");const p={nom:pn.trim(),contrat:d.profile.contrat||"",entreprise:(d.profile.entreprise||d.profile.co||"").trim(),pointageRapide:d.profile.pointageRapide!==undefined?d.profile.pointageRapide:true,pauseMatinHeure:d.profile.pauseMatinHeure||D_PM_H,pauseMatinFin:d.profile.pauseMatinFin||D_PM_F,pauseMidiDebut:d.profile.pauseMidiDebut||D_PD_D,pauseMidiFin:d.profile.pauseMidiFin||D_PD_F};svProf(p);let imported=0;d.weeks.forEach(w=>{if(!w||typeof w!=="object")return;const c=w.cle||w.key;if(!c||typeof c!=="string"||!w.data)return;svSem(c,p.nom,w.data);imported++;});setPr(p);setOk(true);setRk(x=>x+1);flash(`Restauré ✓ (${imported} sem.)`)}catch{flash("Fichier invalide");}document.body.removeChild(inp);};r.onerror=()=>{flash("Erreur de lecture");document.body.removeChild(inp);};r.readAsText(f);};setTimeout(()=>inp.click(),100);};
+  const restaurer=()=>{const inp=document.createElement("input");inp.type="file";inp.accept=".json,application/json";inp.style.cssText="position:fixed;top:-9999px;left:-9999px;opacity:0";document.body.appendChild(inp);inp.onchange=e=>{const f=e.target.files[0];if(!f){document.body.removeChild(inp);return;}const r=new FileReader();r.onload=ev=>{try{const d=JSON.parse(ev.target.result);if(!d||typeof d!=="object"||!d.profile||typeof d.profile!=="object"||!Array.isArray(d.weeks))throw new Error("!");const pn=d.profile.nom||d.profile.name;if(!pn||typeof pn!=="string"||!pn.trim())throw new Error("!");const p={nom:pn.trim(),contrat:d.profile.contrat||"",entreprise:(d.profile.entreprise||d.profile.co||"").trim(),pointageRapide:d.profile.pointageRapide!==undefined?d.profile.pointageRapide:true,pauseMatinHeure:d.profile.pauseMatinHeure||D_PM_H,pauseMatinFin:d.profile.pauseMatinFin||D_PM_F,pauseMidiDebut:d.profile.pauseMidiDebut||D_PD_D,pauseMidiFin:d.profile.pauseMidiFin||D_PD_F};svProf(p);let imported=0;d.weeks.forEach(w=>{if(!w||typeof w!=="object")return;const c=w.cle||w.key;if(!c||typeof c!=="string"||!w.data)return;svSem(c,p.nom,w.data);imported++;});setPr(p);setOk(true);setRk(x=>x+1);recalcCounter(p.nom);flash(`Restauré ✓ (${imported} sem.)`)}catch{flash("Fichier invalide");}document.body.removeChild(inp);};r.onerror=()=>{flash("Erreur de lecture");document.body.removeChild(inp);};r.readAsText(f);};setTimeout(()=>inp.click(),100);};
 
   const stats=useMemo(()=>ok?mStats(pr.nom,pr.contrat,sem.n,pr):[],[pr.nom,pr.contrat,ok,rk,ck,sem.n,pr.pauseMatinHeure,pr.pauseMatinFin,pr.pauseMidiDebut,pr.pauseMidiFin]);
-  const mTot=stats.reduce((s,w)=>s+w.tot,0),mObj=stats.length*objM,mDiff=mTot-mObj;
+  const mTot=stats.reduce((s,w)=>s+w.tot,0),mObj=stats.reduce((s,w)=>s+w.obj,0),mDiff=mTot-mObj;
+  const mDays=stats.reduce((s,w)=>s+(w.daysIn||5),0);
   const mPct=mObj>0?Math.min(100,Math.round(mTot/mObj*100)):0;
   const mAbsTotal=stats.reduce((s,w)=>s+w.absCount,0);
   const mAbsDetail=useMemo(()=>{const agg={};stats.forEach(w=>{Object.entries(w.absMotifs).forEach(([m,c])=>{agg[m]=(agg[m]||0)+c;});});return Object.entries(agg).sort((a,b)=>b[1]-a[1]);},[stats]);
   const archList=useMemo(()=>allSem(pr.nom),[pr.nom,rk,ck,tab,wd]);
 
-  // ── Chart ──
-  const Chart=useMemo(()=>function ChartInner(){
-    if(!stats.length)return<div style={{color:P.muted,fontSize:13,textAlign:"center",padding:20}}>Aucune donnée</div>;
-    const mx=Math.max(...stats.map(s=>Math.max(s.tot,s.obj)));
-    return(<div><div style={{display:"flex",flexDirection:"column",gap:10}}>
-      {stats.map((w,i)=>{const pc=mx>0?Math.round(w.tot/mx*100):0;const op=mx>0?Math.round(w.obj/mx*100):0;const col=w.tot>w.obj?P.teal:(w.cur||!w.v)?P.blue:P.orange;
-        return(<div key={i}><div style={{display:"flex",justifyContent:"space-between",marginBottom:3}}><span style={{fontSize:11,fontWeight:700,color:P.text}}>S{w.num}</span><span style={{fontSize:11,fontWeight:600,color:col}}>{m2h(w.tot)}<span style={{color:P.muted,fontWeight:400}}> / {m2h(w.obj)}</span></span></div>
-          <div style={{height:6,borderRadius:3,background:P.card,position:"relative",overflow:"hidden"}}><div style={{position:"absolute",left:`${op}%`,top:0,bottom:0,width:1.5,background:P.muted,opacity:.4,zIndex:2}}/><div style={{height:"100%",borderRadius:3,background:col,width:`${Math.min(100,pc)}%`,transition:"width .4s"}}/></div></div>);
-      })}</div>
-      <div style={{display:"flex",justifyContent:"center",gap:12,marginTop:10,flexWrap:"wrap"}}>
-        {[["En cours",P.blue],["Heures sup.",P.teal],["Sous objectif",P.orange]].map(([l,c])=>(<div key={l} style={{display:"flex",alignItems:"center",gap:4}}><div style={{width:6,height:6,borderRadius:3,background:c}}/><span style={{fontSize:9,color:P.sub}}>{l}</span></div>))}
-      </div></div>);
-  },[stats,sem.n]);
-
   // ── PDF ──
-  const Releve=({data,ck:ck2,l:l2,v:v2})=>{
+  const Releve=({data,ck:ck2,l:l2,v:v2,moisFilter})=>{
     let cu=0;const pk={bg:"#fff",text:"#111827",sub:"#6B7280",muted:"#9CA3AF",accent:"#0D7377",border:"#E5E7EB",orange:"#D97706"};
     const cell={padding:"8px 6px",borderBottom:`1px solid ${pk.border}`,borderRight:`1px solid ${pk.border}`,textAlign:"center",fontSize:10,color:pk.text};
     const cellL={...cell,textAlign:"left",fontWeight:600};const cellEnd={...cell,borderRight:"none"};
+    const isPartiel=moisFilter!=null;
+    const filteredDays=data.jours.map((j,i)=>{const d=new Date(l2);d.setDate(d.getDate()+i);return{j,i,d,inMonth:!isPartiel||(d.getMonth()===moisFilter.m&&d.getFullYear()===moisFilter.y)};});
+    const visibleDays=filteredDays.filter(x=>x.inMonth);
+    const moisLabel=isPartiel?MOIS[moisFilter.m]+" "+moisFilter.y:"";
     return(<div id="releve-pdf" style={{background:pk.bg,margin:16,borderRadius:20,padding:20,boxShadow:"0 4px 24px rgba(0,0,0,.2)",fontSize:12,lineHeight:1.6,overflowX:"auto",color:pk.text}}>
       <div style={{display:"flex",justifyContent:"space-between",paddingBottom:14,borderBottom:`2px solid ${pk.text}`,marginBottom:12}}>
-        <div><div style={{fontSize:15,fontWeight:700,color:pk.text}}>{pr.entreprise}</div><div style={{fontSize:10,color:pk.sub,marginTop:2}}>Relevé d'heures hebdomadaire</div></div>
-        <div style={{textAlign:"right"}}><div style={{fontSize:12,fontWeight:600,color:pk.text}}>{pr.nom}</div><div style={{fontSize:10,color:pk.accent,fontWeight:600,marginTop:2}}>{pr.contrat}</div><div style={{fontSize:11,fontWeight:700,marginTop:4,color:pk.text}}>Semaine {parseInt(ck2.split("-S")[1])}</div><div style={{fontSize:9,color:pk.sub}}>{fF(l2)} — {fF(v2)}</div></div>
+        <div><div style={{fontSize:15,fontWeight:700,color:pk.text}}>{pr.entreprise}</div><div style={{fontSize:10,color:pk.sub,marginTop:2}}>Relevé d'heures {isPartiel?"— Clôture "+moisLabel:"hebdomadaire"}</div></div>
+        <div style={{textAlign:"right"}}><div style={{fontSize:12,fontWeight:600,color:pk.text}}>{pr.nom}</div><div style={{fontSize:10,color:pk.accent,fontWeight:600,marginTop:2}}>{pr.contrat}</div><div style={{fontSize:11,fontWeight:700,marginTop:4,color:pk.text}}>Semaine {parseInt(ck2.split("-S")[1])}{isPartiel?` (${visibleDays.length}j — ${moisLabel})`:""}</div><div style={{fontSize:9,color:pk.sub}}>{fF(l2)} — {fF(v2)}</div></div>
       </div>
       <table style={{width:"100%",borderCollapse:"collapse",marginTop:6,fontSize:10,border:`1px solid ${pk.border}`}}>
         <colgroup><col style={{width:"16%"}}/><col style={{width:"22%"}}/><col style={{width:"14%"}}/><col style={{width:"14%"}}/><col style={{width:"14%"}}/><col style={{width:"20%"}}/></colgroup>
         <thead><tr>{["Jour","Date","Arrivée","Départ","Pause","Net"].map((h,i)=><th key={h} style={{padding:"7px 4px",fontSize:8,fontWeight:700,textTransform:"uppercase",letterSpacing:.5,textAlign:i===0?"left":"center",color:pk.sub,borderBottom:`2px solid ${pk.text}`,borderRight:i<5?`1px solid ${pk.border}`:"none",background:"#F9FAFB"}}>{h}</th>)}</tr></thead>
         <tbody>
-          {data.jours.map((j,i)=>{const d=new Date(l2);d.setDate(d.getDate()+i);
-            if(j.absence){const mt=j.motif==="Autre"?(j.motifAutre||"Autre"):j.motif;return(<tr key={i} style={{background:"#FFF8F0"}}><td style={cellL}>{JOURS[i]}</td><td style={cell}>{fF(d)}</td><td colSpan={3} style={{...cell,color:pk.orange,fontWeight:500}}>{mt}</td><td style={{...cellEnd,color:pk.text}}>—</td></tr>);}
+          {filteredDays.map(({j,i,d,inMonth})=>{
+            if(!inMonth)return null;
+            if(j.absence&&!j.demiJournee){const mt=j.motif==="Autre"?(j.motifAutre||"Autre"):j.motif;return(<tr key={i} style={{background:"#FFF8F0"}}><td style={cellL}>{JOURS[i]}</td><td style={cell}>{fF(d)}</td><td colSpan={3} style={{...cell,color:pk.orange,fontWeight:500}}>{mt}</td><td style={{...cellEnd,color:pk.text}}>—</td></tr>);}
+            if(j.absence&&j.demiJournee){const mt=j.motif==="Autre"?(j.motifAutre||"Autre"):j.motif;const n=cNet(j.arrivee,j.depart,pr);cu+=n;return(<tr key={i} style={{background:"#FFF8F0"}}><td style={cellL}>{JOURS[i]}</td><td style={cell}>{fF(d)}</td><td style={cell}>{j.arrivee||"—"}</td><td style={cell}>{j.depart||"—"}</td><td style={{...cell,color:pk.orange,fontSize:9}}>½ {mt}</td><td style={{...cellEnd,fontWeight:700}}>{j.arrivee&&j.depart?m2h(n):"—"}</td></tr>);}
             const n=cNet(j.arrivee,j.depart,pr);cu+=n;
             return(<tr key={i} style={i%2?{background:"#FAFBFC"}:{}}><td style={cellL}>{JOURS[i]}</td><td style={cell}>{fF(d)}</td><td style={cell}>{j.arrivee||"—"}</td><td style={cell}>{j.depart||"—"}</td><td style={cell}>{j.arrivee&&j.depart?m2h(cPause(j.arrivee,j.depart,pr)):"—"}</td><td style={{...cellEnd,fontWeight:700}}>{j.arrivee&&j.depart?m2h(n):"—"}</td></tr>);
           })}
-          <tr style={{background:"#F9FAFB"}}><td colSpan={5} style={{padding:"8px 6px",textAlign:"right",fontWeight:700,borderTop:`2px solid ${pk.text}`,borderBottom:"none",borderRight:`1px solid ${pk.border}`,color:pk.text}}>TOTAL</td><td style={{padding:"8px 6px",fontWeight:800,fontSize:14,borderTop:`2px solid ${pk.text}`,borderBottom:"none",color:pk.text}}>{m2h(cu)}</td></tr>
+          <tr style={{background:"#F9FAFB"}}><td colSpan={5} style={{padding:"8px 6px",textAlign:"right",fontWeight:700,borderTop:`2px solid ${pk.text}`,borderBottom:"none",borderRight:`1px solid ${pk.border}`,color:pk.text}}>TOTAL{isPartiel?` (${moisLabel})`:""}</td><td style={{padding:"8px 6px",fontWeight:800,fontSize:14,borderTop:`2px solid ${pk.text}`,borderBottom:"none",color:pk.text}}>{m2h(cu)}</td></tr>
         </tbody>
       </table>
       {data.notes&&<div style={{fontSize:10,color:pk.text,marginTop:10,padding:"8px 10px",background:"#F9FAFB",borderRadius:8,border:`1px solid ${pk.border}`}}><strong>Note :</strong> {data.notes}</div>}
       <div style={{fontSize:9,color:pk.muted,marginTop:8}}>Pauses : {pr.pauseMatinHeure||D_PM_H}–{pr.pauseMatinFin||D_PM_F} + {pr.pauseMidiDebut||D_PD_D}–{pr.pauseMidiFin||D_PD_F}</div>
-      {data.valideA&&<div style={{fontSize:10,color:pk.accent,marginTop:6,fontWeight:600}}>✓ Validé le {new Date(data.valideA).toLocaleDateString("fr-FR")} à {new Date(data.valideA).toLocaleTimeString("fr-FR",{hour:"2-digit",minute:"2-digit"})}</div>}
+      {data.report&&!isPartiel&&(()=>{
+        const vp=data.report.valoPDF||data.report.valorisePDF||data.report.valorise||0;
+        const totalRH=(data.report.travaille||cu)+vp;
+        const objC=(H_OBJ[pr.contrat]||DEF_OBJ)*60;
+        return<div style={{marginTop:12,padding:"12px 14px",background:"#F0F9FF",borderRadius:10,border:`1px solid #BFDBFE`,fontSize:10,color:pk.text}}>
+        <div style={{fontWeight:700,marginBottom:8,color:"#1E40AF",fontSize:11}}>Décompte hebdomadaire</div>
+        <div style={{display:"flex",justifyContent:"space-between",padding:"6px 0",borderBottom:`1px solid #DBEAFE`}}>
+          <span style={{color:pk.sub}}>Heures travaillées</span><span style={{fontSize:12}}>{m2h(data.report.travaille||cu)}</span>
+        </div>
+        {vp>0&&<div style={{display:"flex",justifyContent:"space-between",padding:"6px 0",borderBottom:`1px solid #DBEAFE`}}>
+          <span style={{color:"#059669"}}>Absences (valorisation CYFAC)</span><span style={{fontSize:12,color:"#059669"}}>+{m2h(vp)}</span>
+        </div>}
+        <div style={{display:"flex",justifyContent:"space-between",background:"#EFF6FF",margin:"4px -14px 0",padding:"10px 14px",borderBottom:`2px solid #1E40AF`}}>
+          <span style={{fontSize:11,fontWeight:800,color:"#1E40AF"}}>TOTAL RELEVÉ (valorisation RH)</span><span style={{fontSize:16,fontWeight:800,color:"#1E40AF"}}>{m2h(totalRH)}</span>
+        </div>
+        {vp>0&&<div style={{fontSize:8,color:pk.muted,padding:"4px 0",fontStyle:"italic"}}>La valorisation CYFAC (CP/Férié = {pr.contrat==="CDI — 39h"?"8h":"7h"}/jour) est informative. Le compteur ci-dessous utilise le temps contractuel ({pr.contrat==="CDI — 39h"?"7h48":"7h"}/jour).</div>}
+        <div style={{marginTop:6,paddingTop:6,borderTop:`1px solid #DBEAFE`}}>
+          <div style={{fontWeight:700,marginBottom:6,color:"#1E40AF",fontSize:10}}>Compteur de report (temps contractuel)</div>
+          <div style={{display:"flex",justifyContent:"space-between",padding:"3px 0"}}><span style={{fontSize:9,color:pk.muted}}>Objectif contractuel</span><span style={{fontSize:9,color:pk.muted}}>{m2h(objC)}</span></div>
+          <div style={{display:"flex",justifyContent:"space-between",padding:"3px 0"}}><span style={{fontSize:9,color:pk.muted}}>Écart semaine</span><span style={{fontSize:9,color:data.report.ecart>=0?"#059669":"#DC2626",fontWeight:600}}>{data.report.ecart>0?"+":data.report.ecart<0?"−":""}{m2h(Math.abs(data.report.ecart))}</span></div>
+          <div style={{display:"flex",justifyContent:"space-between",padding:"3px 0"}}><span style={{fontSize:9,color:pk.muted}}>Compteur précédent</span><span style={{fontSize:9,color:pk.muted}}>{data.report.avant>0?"+":data.report.avant<0?"−":""}{m2h(Math.abs(data.report.avant))}</span></div>
+          <div style={{display:"flex",justifyContent:"space-between",padding:"3px 0"}}><span style={{fontSize:9,color:pk.muted}}>Report appliqué (±3h max)</span><span style={{fontSize:9,color:pk.muted}}>{data.report.applique>0?"+":data.report.applique<0?"−":""}{m2h(Math.abs(data.report.applique))}</span></div>
+          <div style={{display:"flex",justifyContent:"space-between",background:"#EFF6FF",margin:"4px -14px 0",padding:"8px 14px",borderTop:`2px solid #1E40AF`,borderRadius:"0 0 6px 6px"}}><span style={{fontSize:11,fontWeight:800,color:"#1E40AF"}}>Compteur actuel</span><span style={{fontSize:14,fontWeight:800,color:"#1E40AF"}}>{data.report.apres>0?"+":data.report.apres<0?"−":""}{m2h(Math.abs(data.report.apres))}</span></div>
+        </div>
+      </div>})()}
+      {isPartiel&&<div style={{marginTop:12,padding:"10px 14px",background:"#FEF3C7",borderRadius:10,border:`1px solid #FDE68A`,fontSize:10,color:"#92400E"}}>
+        Relevé partiel — Clôture {moisLabel}. Le compteur de report figure sur le relevé complet de la semaine.
+      </div>}
+      {data.valideA&&!isPartiel&&<div style={{fontSize:10,color:pk.accent,marginTop:6,fontWeight:600}}>✓ Validé le {new Date(data.valideA).toLocaleDateString("fr-FR")} à {new Date(data.valideA).toLocaleTimeString("fr-FR",{hour:"2-digit",minute:"2-digit"})}</div>}
       <div style={{display:"flex",gap:14,marginTop:20}}><div style={{flex:1,border:`1px solid ${pk.border}`,borderRadius:10,padding:12,minHeight:50}}><div style={{fontSize:8,color:pk.muted,textTransform:"uppercase",letterSpacing:.5}}>Signature salarié</div></div><div style={{flex:1,border:`1px solid ${pk.border}`,borderRadius:10,padding:12,minHeight:50}}><div style={{fontSize:8,color:pk.muted,textTransform:"uppercase",letterSpacing:.5}}>Signature responsable</div></div></div>
       <div style={{fontSize:8,color:pk.muted,marginTop:10,textAlign:"right"}}>Mon Relevé v{VERSION}</div>
     </div>);
@@ -328,7 +439,7 @@ window.MonReleve=function MonReleve(){
       <button onClick={()=>{if(!pr.nom.trim()||!pr.entreprise.trim()){flash("Remplissez tous les champs");return;}svProf(pr);setOk(true);setEd(false);flash("Enregistré ✓");}} style={{...st.cta,width:"100%"}}>{ok?"Enregistrer":"Commencer"}</button>
       {ok&&<button onClick={()=>setEd(false)} style={{...st.sec,width:"100%",marginTop:10}}>Annuler</button>}
       {!ok&&<button onClick={restaurer} style={{...st.sec,width:"100%",marginTop:10}}>Restaurer une sauvegarde</button>}
-      <div style={{fontSize:10,color:P.dim,marginTop:14}}>v{VERSION}</div>
+      <div style={{fontSize:10,color:P.dim,marginTop:12,textAlign:"center"}}>v{VERSION}</div>
     </div></div>);
   }
 
@@ -336,27 +447,40 @@ window.MonReleve=function MonReleve(){
   if(!wd)return<div style={st.app}><div style={{display:"flex",alignItems:"center",justifyContent:"center",minHeight:"100vh"}}><IClock color={P.teal} size={32}/></div></div>;
 
   // ── Validation popup ──
-  if(pop&&wd){return(
+  if(pop&&wd){
+    const chevalPop=lun.getMonth()!==ven.getMonth()||lun.getFullYear()!==ven.getFullYear();
+    const m1={m:lun.getMonth(),y:lun.getFullYear()};const m2p={m:ven.getMonth(),y:ven.getFullYear()};
+    return(
     <div style={st.app}>
-      <div style={st.topBar}><button onClick={()=>setPop(false)} style={st.topBtn}>← Retour</button><button onClick={()=>window.print()} style={st.topAct}>PDF</button></div>
-      <Releve data={wd} ck={ck} l={lun} v={ven}/>
-      <div style={{padding:"0 16px 32px"}}>
-        <button onClick={()=>{const wn=sem.n;const su=encodeURIComponent(`Relevé d'heures – Semaine ${wn} (${fC(lun)} au ${fC(ven)} ${lun.getFullYear()}) – ${pr.nom}`);const bo=encodeURIComponent(`Bonjour,\n\nVeuillez trouver en pièce jointe mon relevé d'heures pour la semaine ${wn}, du ${fC(lun)} au ${fC(ven)} ${lun.getFullYear()}.\n\nJe reste à votre disposition pour toute information complémentaire.\n\nCordialement,\n${pr.nom}`);window.open(`mailto:?subject=${su}&body=${bo}`,"_self");}} style={{...st.cta,width:"100%"}}>Envoyer par mail</button>
-        <p style={{fontSize:11,color:P.sub,textAlign:"center",marginTop:10}}>Sauvegardez le PDF, puis joignez-le au mail.</p>
+      <div style={st.topBar}><button onClick={()=>{setPop(false);setPdfMois(null);}} style={st.topBtn}>← Retour</button></div>
+      {chevalPop&&<div style={{display:"flex",gap:6,padding:"0 16px 8px",justifyContent:"center"}}>
+        <button onClick={()=>setPdfMois(pdfMois&&pdfMois.m===m1.m?null:m1)} style={{fontSize:11,fontWeight:600,padding:"6px 14px",borderRadius:20,border:`1px solid ${pdfMois&&pdfMois.m===m1.m?P.teal:P.border}`,background:pdfMois&&pdfMois.m===m1.m?"rgba(45,212,168,.1)":"transparent",color:pdfMois&&pdfMois.m===m1.m?P.teal:P.sub,cursor:"pointer"}}>{MOIS[m1.m]}</button>
+        <button onClick={()=>setPdfMois(pdfMois&&pdfMois.m===m2p.m?null:m2p)} style={{fontSize:11,fontWeight:600,padding:"6px 14px",borderRadius:20,border:`1px solid ${pdfMois&&pdfMois.m===m2p.m?P.teal:P.border}`,background:pdfMois&&pdfMois.m===m2p.m?"rgba(45,212,168,.1)":"transparent",color:pdfMois&&pdfMois.m===m2p.m?P.teal:P.sub,cursor:"pointer"}}>{MOIS[m2p.m]}</button>
+        <button onClick={()=>setPdfMois(null)} style={{fontSize:11,fontWeight:600,padding:"6px 14px",borderRadius:20,border:`1px solid ${!pdfMois?P.teal:P.border}`,background:!pdfMois?"rgba(45,212,168,.1)":"transparent",color:!pdfMois?P.teal:P.sub,cursor:"pointer"}}>Complet</button>
+      </div>}
+      <Releve data={wd} ck={ck} l={lun} v={ven} moisFilter={pdfMois}/>
+      <div style={{padding:"0 16px 32px",display:"flex",flexDirection:"column",alignItems:"center",gap:10}}>
+        <button onClick={()=>window.print()} style={{...st.cta,width:"100%",maxWidth:280}}>Exporter en PDF</button>
+        <p style={{fontSize:11,color:P.sub,textAlign:"center"}}>Enregistrez le PDF puis partagez-le par mail ou AirDrop.</p>
       </div>
     </div>
   );}
 
   // ── Archive detail ──
-  if(arch){const al=getLunCle(arch.cle);return(
+  if(arch){const al=getLunCle(arch.cle);const av=new Date(al.getTime()+4*MS_DAY);const chevalArch=al.getMonth()!==av.getMonth()||al.getFullYear()!==av.getFullYear();const ma1={m:al.getMonth(),y:al.getFullYear()};const ma2={m:av.getMonth(),y:av.getFullYear()};return(
     <div style={st.app}>
-      <div style={st.topBar}><button onClick={()=>{setArch(null);setCfDel(false);}} style={st.topBtn}>← Historique</button><button onClick={()=>window.print()} style={st.topAct}>PDF</button></div>
-      <Releve data={arch.data} ck={arch.cle} l={al} v={new Date(al.getTime()+4*MS_DAY)}/>
+      <div style={st.topBar}><button onClick={()=>{setArch(null);setCfDel(false);setPdfMois(null);}} style={st.topBtn}>← Historique</button><button onClick={()=>window.print()} style={st.topAct}>PDF</button></div>
+      {chevalArch&&<div style={{display:"flex",gap:6,padding:"0 16px 8px",justifyContent:"center"}}>
+        <button onClick={()=>setPdfMois(pdfMois&&pdfMois.m===ma1.m?null:ma1)} style={{fontSize:11,fontWeight:600,padding:"6px 14px",borderRadius:20,border:`1px solid ${pdfMois&&pdfMois.m===ma1.m?P.teal:P.border}`,background:pdfMois&&pdfMois.m===ma1.m?"rgba(45,212,168,.1)":"transparent",color:pdfMois&&pdfMois.m===ma1.m?P.teal:P.sub,cursor:"pointer"}}>{MOIS[ma1.m]}</button>
+        <button onClick={()=>setPdfMois(pdfMois&&pdfMois.m===ma2.m?null:ma2)} style={{fontSize:11,fontWeight:600,padding:"6px 14px",borderRadius:20,border:`1px solid ${pdfMois&&pdfMois.m===ma2.m?P.teal:P.border}`,background:pdfMois&&pdfMois.m===ma2.m?"rgba(45,212,168,.1)":"transparent",color:pdfMois&&pdfMois.m===ma2.m?P.teal:P.sub,cursor:"pointer"}}>{MOIS[ma2.m]}</button>
+        <button onClick={()=>setPdfMois(null)} style={{fontSize:11,fontWeight:600,padding:"6px 14px",borderRadius:20,border:`1px solid ${!pdfMois?P.teal:P.border}`,background:!pdfMois?"rgba(45,212,168,.1)":"transparent",color:!pdfMois?P.teal:P.sub,cursor:"pointer"}}>Complet</button>
+      </div>}
+      <Releve data={arch.data} ck={arch.cle} l={al} v={av} moisFilter={pdfMois}/>
       <div style={{padding:"0 16px 32px"}}>
         {!cfDel?<button onClick={()=>setCfDel(true)} style={{...st.sec,width:"100%",color:P.red}}>Supprimer ce relevé</button>
           :<div style={{background:"rgba(239,68,68,.1)",borderRadius:18,padding:16}}>
             <div style={{fontSize:13,fontWeight:600,color:P.text,textAlign:"center",marginBottom:12}}>Supprimer la semaine {parseInt(arch.cle.split("-S")[1])} ?</div>
-            <div style={{display:"flex",gap:10}}><button onClick={()=>setCfDel(false)} style={{...st.sec,flex:1}}>Annuler</button><button onClick={()=>{delSem(arch.cle,pr.nom);setArch(null);setCfDel(false);setRk(x=>x+1);flash("Supprimé");}} style={{...st.sec,flex:1,background:P.red,color:"#fff"}}>Supprimer</button></div>
+            <div style={{display:"flex",gap:10}}><button onClick={()=>setCfDel(false)} style={{...st.sec,flex:1}}>Annuler</button><button onClick={()=>{delSem(arch.cle,pr.nom);recalcCounter(pr.nom);setArch(null);setCfDel(false);setRk(x=>x+1);flash("Supprimé");}} style={{...st.sec,flex:1,background:P.red,color:"#fff"}}>Supprimer</button></div>
           </div>}
       </div>
     </div>
@@ -395,24 +519,23 @@ window.MonReleve=function MonReleve(){
         <div style={{...GL,borderRadius:24,padding:"18px 20px"}}>
           <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-end"}}>
             <div>
-              <div style={{fontSize:10,color:P.sub,fontWeight:500,textTransform:"uppercase",letterSpacing:.5}}>Temps déclaré</div>
-              <div style={{fontSize:34,fontWeight:800,color:P.text,letterSpacing:-2,marginTop:2}}>{m2h(totMin)}</div>
+              <div style={{fontSize:9,color:P.muted,fontWeight:500,textTransform:"uppercase",letterSpacing:.5}}>Temps travaillé</div>
+              <div style={{fontSize:38,fontWeight:800,color:P.text,letterSpacing:-2,marginTop:1}}>{m2h(totMin)}</div>
             </div>
-            <div style={{textAlign:"right",marginBottom:4}}>
-              <div style={{fontSize:13,color:P.muted}}>sur {H_OBJ[pr.contrat]||DEF_OBJ}h</div>
-              <div style={{fontSize:11,color:P.sub}}>prévues</div>
+            <div style={{textAlign:"right",marginBottom:6}}>
+              <div style={{fontSize:11,color:P.muted}}>sur {curReport?m2h(curReport.objAjuste):(H_OBJ[pr.contrat]||DEF_OBJ)+"h"} prévues</div>
             </div>
           </div>
           <div style={{marginTop:8,height:5,borderRadius:3,background:P.card,overflow:"hidden"}}>
             <div style={{height:"100%",borderRadius:3,background:pct>=100?P.teal:P.blue,width:`${pct}%`,transition:"width .4s"}}/>
           </div>
-          <div style={{marginTop:6,display:"flex",justifyContent:"space-between",alignItems:"center"}}>
-            <div style={{display:"flex",alignItems:"center",gap:5}}>
-              {isWeekend&&weekStatus?(<><div style={{width:7,height:7,borderRadius:4,background:wd.valide?P.teal:P.blue}}/><span style={{fontSize:11,fontWeight:600,color:wd.valide?P.teal:P.blue}}>{weekStatus}</span></>)
-              :wd.valide?(<><div style={{width:7,height:7,borderRadius:4,background:P.teal}}/><span style={{fontSize:11,fontWeight:600,color:P.teal}}>Envoyé</span></>)
-              :(<><div style={{width:7,height:7,borderRadius:4,background:P.orange}}/><span style={{fontSize:11,fontWeight:600,color:P.orange}}>Non envoyé</span></>)}
+          <div style={{marginTop:5,display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+            <div style={{display:"flex",alignItems:"center",gap:4}}>
+              {isWeekend&&weekStatus?(<><div style={{width:6,height:6,borderRadius:3,background:wd.valide?P.teal:P.blue}}/><span style={{fontSize:10,fontWeight:600,color:wd.valide?P.teal:P.blue}}>{weekStatus}</span></>)
+              :wd.valide?(<><div style={{width:6,height:6,borderRadius:3,background:P.teal}}/><span style={{fontSize:10,fontWeight:600,color:P.teal}}>Envoyé</span></>)
+              :(<><div style={{width:6,height:6,borderRadius:3,background:P.orange}}/><span style={{fontSize:10,fontWeight:600,color:P.orange}}>Non envoyé</span></>)}
             </div>
-            {(()=>{const jc=wd.jours.filter(j=>!j.absence&&(j.arrivee||j.depart)).length;return<span style={{fontSize:10,color:P.muted}}>{jc} jour{jc>1?"s":""} saisis</span>;})()}
+            {(()=>{const jc=wd.jours.filter(j=>!j.absence&&(j.arrivee||j.depart)).length;return<span style={{fontSize:9,color:P.dim}}>{jc} jour{jc>1?"s":""} saisis</span>;})()}
           </div>
         </div>
       </div>
@@ -420,27 +543,74 @@ window.MonReleve=function MonReleve(){
       <div style={st.body}>
         {/* ── TAB HEURES ── */}
         {tab==="heures"&&(<>
+          {wd.valide&&<div style={{...GL,borderRadius:16,padding:"12px 16px",marginBottom:10}}>
+            {!cfUnlock?
+              <div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+                <div><div style={{fontSize:12,fontWeight:600,color:P.teal}}>✓ Semaine validée</div><div style={{fontSize:10,color:P.sub,marginTop:2}}>Relevé figé — modification impossible</div></div>
+                <button onClick={()=>setCfUnlock(true)} style={{...st.sec,fontSize:11,padding:"8px 14px"}}>Modifier</button>
+              </div>
+            :
+              <div>
+                <div style={{fontSize:12,fontWeight:600,color:P.orange,textAlign:"center",marginBottom:8}}>Déverrouiller ce relevé ?</div>
+                <div style={{fontSize:11,color:P.sub,textAlign:"center",marginBottom:12}}>Le report de cette semaine sera annulé du compteur. Une nouvelle validation sera nécessaire.</div>
+                <div style={{display:"flex",gap:10}}>
+                  <button onClick={()=>setCfUnlock(false)} style={{...st.sec,flex:1}}>Annuler</button>
+                  <button onClick={()=>{deverrouiller();setCfUnlock(false);}} style={{...st.sec,flex:1,background:P.orange,color:P.bg}}>Déverrouiller</button>
+                </div>
+              </div>
+            }
+          </div>}
           {dayOrder.map(i=>{
             const j=wd.jours[i];
-            if(j.absence)return<div key={i} style={st.dc}><div style={st.dRow}><span style={st.dN}>{JOURS[i]}</span><span style={st.absP}>{j.motif==="Autre"?(j.motifAutre||"Absence"):j.motif}</span></div></div>;
+            if(j.absence&&!j.demiJournee)return<div key={i} style={{...st.dc,...(wd.valide?{opacity:.7}:{})}}><div style={st.dRow}><span style={st.dN}>{JOURS[i]}</span><span style={st.absP}>{j.motif==="Autre"?(j.motifAutre||"Absence"):j.motif}</span></div></div>;
+            if(j.absence&&j.demiJournee){const n=cNet(j.arrivee,j.depart,pr);const ok2=j.arrivee&&j.depart;
+              return(<div key={i} style={{...st.dc,...(wd.valide?{opacity:.7}:{})}}>
+                <div style={st.dRow}>
+                  <div style={{display:"flex",alignItems:"center",gap:6}}><span style={st.dN}>{JOURS[i]}</span><span style={{...st.absP,fontSize:9}}>½ {j.motif==="Autre"?(j.motifAutre||"Absence"):j.motif}</span></div>
+                  {ok2&&<span style={st.netP}>{m2h(n)}</span>}
+                </div>
+                {wd.valide?
+                  <div style={{display:"grid",gridTemplateColumns:"1fr auto 1fr",gap:6,alignItems:"center",marginTop:6}}>
+                    <div style={{textAlign:"center",padding:"10px 12px",fontSize:15,fontWeight:600,color:P.sub}}>{j.arrivee||"–:–"}</div>
+                    <div style={{color:P.dim,fontSize:12}}>→</div>
+                    <div style={{textAlign:"center",padding:"10px 12px",fontSize:15,fontWeight:600,color:P.sub}}>{j.depart||"–:–"}</div>
+                  </div>
+                :
+                  <div style={{display:"grid",gridTemplateColumns:"1fr auto 1fr",gap:6,alignItems:"start",marginTop:6}}>
+                    <TimeInput value={j.arrivee} onChange={v=>mj(i,"arrivee",v)} label="Arrivée"/>
+                    <div style={{color:P.dim,marginTop:22,fontSize:12}}>→</div>
+                    <TimeInput value={j.depart} onChange={v=>mj(i,"depart",v)} label="Départ"/>
+                  </div>
+                }
+                {ok2&&<div style={{fontSize:11,color:P.sub,marginTop:4}}>Pause {m2h(cPause(j.arrivee,j.depart,pr))} · Net {m2h(n)}</div>}
+              </div>);
+            }
             const n=cNet(j.arrivee,j.depart,pr);const isT=cur&&i===ti&&!isWeekend;const ok2=j.arrivee&&j.depart;
-            return(<div key={i} style={{...st.dc,...(isT?{border:`1.5px solid ${P.teal}`,boxShadow:`0 0 16px ${P.teal}15`}:{})}}>
+            return(<div key={i} style={{...st.dc,...(isT&&!wd.valide?{border:`1.5px solid ${P.teal}`,boxShadow:`0 0 16px ${P.teal}15`}:{}),...(wd.valide?{opacity:.7}:{})}}>
               <div style={st.dRow}>
                 <div style={{display:"flex",alignItems:"center",gap:6}}>
                   <span style={st.dN}>{JOURS[i]}</span>
-                  {isT&&<span style={{fontSize:8,fontWeight:700,color:P.teal,background:P.tealDim,padding:"2px 7px",borderRadius:8}}>Aujourd'hui</span>}
+                  {isT&&!wd.valide&&<span style={{fontSize:8,fontWeight:700,color:P.teal,background:P.tealDim,padding:"2px 7px",borderRadius:8}}>Aujourd'hui</span>}
                 </div>
                 <div style={{display:"flex",alignItems:"center",gap:6}}>
-                  {isT&&showQ&&!j.arrivee&&<button onClick={()=>pointer(i,"arrivee")} style={st.punchBtn}>↓</button>}
-                  {isT&&showQ&&j.arrivee&&!j.depart&&<button onClick={()=>pointer(i,"depart")} style={{...st.punchBtn,borderColor:`${P.blue}40`}}>↑</button>}
+                  {isT&&showQ&&!wd.valide&&!j.arrivee&&<button onClick={()=>pointer(i,"arrivee")} style={st.punchBtn}>↓</button>}
+                  {isT&&showQ&&!wd.valide&&j.arrivee&&!j.depart&&<button onClick={()=>pointer(i,"depart")} style={{...st.punchBtn,borderColor:`${P.blue}40`}}>↑</button>}
                   {ok2&&<span style={st.netP}>{m2h(n)}</span>}
                 </div>
               </div>
-              <div style={{display:"grid",gridTemplateColumns:"1fr auto 1fr",gap:6,alignItems:"start",marginTop:6}}>
-                <TimeInput value={j.arrivee} onChange={v=>mj(i,"arrivee",v)} label="Arrivée"/>
-                <div style={{color:P.dim,marginTop:22,fontSize:12}}>→</div>
-                <TimeInput value={j.depart} onChange={v=>mj(i,"depart",v)} label="Départ"/>
-              </div>
+              {wd.valide?
+                <div style={{display:"grid",gridTemplateColumns:"1fr auto 1fr",gap:6,alignItems:"center",marginTop:6}}>
+                  <div style={{textAlign:"center",padding:"10px 12px",fontSize:15,fontWeight:600,color:P.sub}}>{j.arrivee||"–:–"}</div>
+                  <div style={{color:P.dim,fontSize:12}}>→</div>
+                  <div style={{textAlign:"center",padding:"10px 12px",fontSize:15,fontWeight:600,color:P.sub}}>{j.depart||"–:–"}</div>
+                </div>
+              :
+                <div style={{display:"grid",gridTemplateColumns:"1fr auto 1fr",gap:6,alignItems:"start",marginTop:6}}>
+                  <TimeInput value={j.arrivee} onChange={v=>mj(i,"arrivee",v)} label="Arrivée"/>
+                  <div style={{color:P.dim,marginTop:22,fontSize:12}}>→</div>
+                  <TimeInput value={j.depart} onChange={v=>mj(i,"depart",v)} label="Départ"/>
+                </div>
+              }
               {ok2&&<div style={{fontSize:11,color:P.sub,marginTop:4}}>Pause {m2h(cPause(j.arrivee,j.depart,pr))} · Net {m2h(n)}</div>}
             </div>);
           })}
@@ -467,73 +637,242 @@ window.MonReleve=function MonReleve(){
             </label>
             {j.absence&&(<div style={{marginTop:10,paddingTop:10,borderTop:`1px solid ${P.border}`}}>
               <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:6}}>{MOTIFS.map(m=><button key={m} onClick={()=>mj(i,"motif",m)} style={{...st.mP,...(j.motif===m?{background:P.teal,color:P.bg}:{})}}>{m}</button>)}</div>
+              {j.motif&&<div style={{display:"flex",gap:8,marginTop:10}}>{[{l:"Journée",v:false},{l:"Demi-journée",v:true}].map(o=><button key={o.l} onClick={()=>mj(i,"demiJournee",o.v)} style={{...st.mP,flex:1,...(j.demiJournee===o.v?{background:P.teal,color:P.bg}:{})}}>{o.l}</button>)}</div>}
               {j.motif==="Autre"&&<input type="text" placeholder="Précisez…" value={j.motifAutre} onChange={e=>mj(i,"motifAutre",e.target.value)} style={{...st.fi,marginTop:8,padding:"10px 14px",fontSize:13}}/>}
             </div>)}
           </div>))}
         </>)}
 
-        {/* ── TAB HISTORIQUE ── */}
+        {/* ── TAB TABLEAU DE BORD ── */}
         {tab==="historique"&&(<>
-          <div style={{fontSize:16,fontWeight:700,color:P.text,marginBottom:3}}>{MOIS[new Date().getMonth()]}</div>
-          <div style={{fontSize:12,color:P.sub,marginBottom:10}}>Synthèse mensuelle</div>
-          <div style={{...GL,borderRadius:24,padding:"18px 20px"}}>
-            <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-end"}}>
-              <div><div style={{fontSize:10,color:P.sub,textTransform:"uppercase",letterSpacing:.5}}>Cumulé</div><div style={{fontSize:28,fontWeight:800,color:P.text,marginTop:2,letterSpacing:-1}}>{m2h(mTot)}</div></div>
-              <div style={{textAlign:"right",marginBottom:2}}><div style={{fontSize:13,color:P.muted}}>sur {m2h(mObj)}</div><div style={{fontSize:10,color:P.sub,marginTop:1}}>{stats.length} sem.</div></div>
-            </div>
-            <div style={{marginTop:10,height:6,borderRadius:3,background:"rgba(255,255,255,.06)",overflow:"hidden"}}><div style={{height:"100%",borderRadius:3,background:mPct>=100?P.teal:P.blue,width:`${mPct}%`,transition:"width .4s ease"}}/></div>
-            <div style={{display:"flex",justifyContent:"space-between",marginTop:4}}><span style={{fontSize:10,color:P.muted}}>{mPct}%</span><span style={{fontSize:10,color:P.muted}}>{m2h(mObj)}</span></div>
-            {stats.length>0&&(<div style={{display:"flex",alignItems:"center",gap:8,padding:"6px 10px",borderRadius:12,background:mDiff>0?P.tealDim:mDiff<0?"rgba(251,191,36,.08)":"rgba(59,130,246,.08)",marginTop:8}}>
-              <div style={{width:7,height:7,borderRadius:4,background:mDiff>0?P.teal:mDiff<0?P.orange:P.blue}}/>
-              <span style={{fontSize:12,fontWeight:600,color:mDiff>0?P.teal:mDiff<0?P.orange:P.blue}}>{mDiff>0?`+${m2h(mDiff)} heures sup.`:mDiff<0?`${m2h(Math.abs(mDiff))} restantes`:"Objectif atteint"}</span>
-            </div>)}
-            {mAbsTotal>0&&(<div style={{marginTop:12,paddingTop:10,borderTop:`1px solid ${P.border}`}}>
-              <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:8}}><span style={{fontSize:12,fontWeight:600,color:P.text}}>Absences</span><span style={{fontSize:12,fontWeight:700,color:P.orange}}>{mAbsTotal}j</span></div>
-              <div style={{display:"flex",flexWrap:"wrap",gap:6}}>{mAbsDetail.map(([motif,count])=>(<div key={motif} style={{display:"flex",alignItems:"center",gap:4,background:"rgba(251,191,36,.06)",padding:"4px 10px",borderRadius:999,border:`1px solid rgba(251,191,36,.12)`}}><span style={{fontSize:11,fontWeight:600,color:P.orange}}>{count}</span><span style={{fontSize:11,color:P.sub}}>{motif}</span></div>))}</div>
-            </div>)}
-          </div>
-          {stats.length>0&&<div style={{...GL,borderRadius:24,padding:"14px 18px",marginTop:10}}><div style={{fontSize:12,fontWeight:600,color:P.text,marginBottom:10}}>Heures par semaine</div><Chart/></div>}
-          <div style={{marginTop:12,fontSize:14,fontWeight:700,color:P.text,marginBottom:8}}>Tous les relevés</div>
-          {archList.length===0&&<div style={{color:P.muted,fontSize:13,padding:30,textAlign:"center"}}>Aucun relevé</div>}
-          {archList.map(({cle:c,data:d})=>{
-            const wt=d.jours.reduce((s,j)=>j.absence?s:s+cNet(j.arrivee,j.depart,pr),0);
-            const al=getLunCle(c);const av=new Date(al.getTime()+4*MS_DAY);
-            return(<button key={c} onClick={()=>setArch({cle:c,data:d})} style={st.archI}>
-              <div style={{flex:1}}>
-                <div style={{fontSize:20,fontWeight:800,color:P.text}}>{m2h(wt)}</div>
-                <div style={{fontSize:12,color:P.sub,marginTop:1}}>{fC(al)} – {fC(av)}</div>
-              </div>
-              <div style={{display:"flex",alignItems:"center",gap:6}}>{d.valide&&<ICheck size={12}/>}<span style={{fontSize:10,fontWeight:600,color:P.teal,letterSpacing:.5}}>S{parseInt(c.split("-S")[1])}</span><span style={{color:P.dim,fontSize:18}}>›</span></div>
-            </button>);
-          })}
-          {/* Sécurité des données */}
-          <div style={{marginTop:20}}>
-            <div style={{...GL,borderRadius:24,padding:"18px 20px"}}>
-              <div style={{display:"flex",alignItems:"center",gap:6,marginBottom:12}}>
-                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke={P.teal} strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
-                <span style={{fontSize:14,fontWeight:700,color:P.text}}>Sécurité des données</span>
-              </div>
-              <div style={{display:"flex",alignItems:"center",gap:6,padding:"8px 12px",borderRadius:12,background:lastBackup?P.tealDim:"rgba(251,191,36,.08)",marginBottom:12}}>
-                <div style={{width:7,height:7,borderRadius:4,background:lastBackup?P.teal:P.orange}}/>
-                <div>
-                  <div style={{fontSize:11,fontWeight:600,color:lastBackup?P.teal:P.orange}}>{lastBackup?"Dernière sauvegarde":"Aucune sauvegarde"}</div>
-                  {lastBackup&&<div style={{fontSize:10,color:P.sub,marginTop:1}}>{new Date(lastBackup).toLocaleDateString("fr-FR")} à {new Date(lastBackup).toLocaleTimeString("fr-FR",{hour:"2-digit",minute:"2-digit"})}</div>}
+          {/* Compteur de report (toujours visible) */}
+          {(()=>{const cnt=ldCounter();return(
+            <div style={{...GL,borderRadius:20,padding:"14px 18px",marginBottom:10}}>
+              <div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+                <div style={{display:"flex",alignItems:"center",gap:6}}>
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke={P.teal} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>
+                  <span style={{fontSize:11,color:P.sub,textTransform:"uppercase",letterSpacing:.5,fontWeight:600}}>Compteur de report</span>
                 </div>
+                <div style={{fontSize:22,fontWeight:800,color:cnt>0?P.teal:cnt<0?P.orange:P.text}}>{cnt>0?"+":cnt<0?"−":""}{m2h(Math.abs(cnt))}</div>
               </div>
-              <button onClick={exporter} style={{...st.cta,width:"100%",height:44,fontSize:13,marginBottom:8}}>Sauvegarder</button>
-              <button onClick={restaurer} style={{...st.sec,width:"100%",fontSize:12,padding:"10px 16px"}}>Restaurer</button>
-              <div style={{fontSize:10,color:P.muted,lineHeight:1.5,textAlign:"center",marginTop:8}}>{/iPhone|iPad|iPod/.test(navigator.userAgent)?"Conservez votre sauvegarde dans iCloud Drive.":/Android/.test(navigator.userAgent)?"Conservez votre sauvegarde dans Google Drive.":"Conservez dans iCloud Drive ou Google Drive."}</div>
+              <div style={{textAlign:"right",marginTop:2}}><span style={{fontSize:10,color:cnt>0?P.teal:cnt<0?P.orange:P.dim}}>{cnt>0?"En avance":cnt<0?"À récupérer":"Équilibré"}</span></div>
+              <div style={{marginTop:6,height:4,borderRadius:2,background:P.card,overflow:"hidden",position:"relative"}}>
+                <div style={{position:"absolute",left:"50%",top:0,bottom:0,width:1,background:P.dim}}/>
+                {cnt!==0&&<div style={{height:"100%",borderRadius:2,background:cnt>0?P.teal:P.orange,width:`${Math.min(50,Math.abs(cnt)/REPORT_GLOBAL_CAP*50)}%`,marginLeft:cnt>=0?"50%":"auto",marginRight:cnt<0?"50%":"auto",transition:"width .4s"}}/>}
+              </div>
+              <div style={{display:"flex",justifyContent:"space-between",marginTop:3}}><span style={{fontSize:9,color:P.muted}}>−{m2h(REPORT_GLOBAL_CAP)}</span><span style={{fontSize:9,color:P.dim}}>0</span><span style={{fontSize:9,color:P.muted}}>+{m2h(REPORT_GLOBAL_CAP)}</span></div>
+              <div style={{fontSize:9,color:P.dim,marginTop:4,textAlign:"center"}}>Plafond hebdo : ±{m2h(REPORT_WEEK_CAP)} · Plafond cumulé : ±{m2h(REPORT_GLOBAL_CAP)}</div>
             </div>
+          );})()}
+
+          {/* Mois en cours (toujours visible) */}
+          <div style={{...GL,borderRadius:20,padding:"14px 18px",marginBottom:10}}>
+            <div style={{display:"flex",justifyContent:"space-between",alignItems:"baseline",marginBottom:4}}>
+              <span style={{fontSize:12,fontWeight:700,color:P.text,textTransform:"uppercase",letterSpacing:.5}}>{MOIS[new Date().getMonth()]}</span>
+              {stats.length>0&&<div style={{fontSize:15,fontWeight:800,color:mDiff>0?P.teal:mDiff<0?P.orange:P.teal}}>{mDiff>0?`+${m2h(mDiff)}`:mDiff<0?`−${m2h(Math.abs(mDiff))}`:"À jour"}</div>}
+            </div>
+            {stats.length>0&&<div style={{fontSize:10,color:mDiff>0?P.teal:mDiff<0?P.orange:P.teal,marginBottom:8,fontWeight:500}}>{mDiff>0?"d'avance":mDiff<0?"restantes":""}</div>}
+            <div style={{display:"flex",justifyContent:"space-between",alignItems:"baseline"}}>
+              <div style={{fontSize:14,fontWeight:600,color:P.sub}}>{m2h(mTot)} <span style={{fontWeight:400,color:P.muted}}>/ {m2h(mObj)}</span></div>
+              {stats.length>0&&<button onClick={()=>setDetailMois(!detailMois)} style={{background:"none",border:"none",cursor:"pointer",color:P.teal,fontSize:11,fontWeight:600,padding:"4px 0"}}>Détail {detailMois?"▴":"›"}</button>}
+            </div>
+            <div style={{marginTop:6,height:4,borderRadius:2,background:"rgba(255,255,255,.06)",overflow:"hidden"}}><div style={{height:"100%",borderRadius:2,background:mPct>=100?P.teal:P.blue,width:`${mPct}%`,transition:"width .4s ease"}}/></div>
+            <div style={{display:"flex",justifyContent:"space-between",marginTop:3}}><span style={{fontSize:9,color:P.dim}}>{mPct}%</span><span style={{fontSize:9,color:P.dim}}>{mDays}j ouvrés</span></div>
+            {mAbsTotal>0&&<div style={{display:"flex",flexWrap:"wrap",gap:4,marginTop:5}}>{mAbsDetail.map(([motif,count])=>(<div key={motif} style={{fontSize:9,color:P.orange,background:"rgba(251,191,36,.06)",padding:"2px 7px",borderRadius:999}}>{count%1===0.5?(count===0.5?"½":(count-0.5)+"½"):count}j {motif}</div>))}</div>}
+            {detailMois&&stats.length>0&&<div style={{marginTop:8,paddingTop:8,borderTop:`1px solid ${P.border}`}}>
+              {stats.map((w,i)=>{const col=w.tot>=w.obj?P.teal:P.orange;const pc=w.obj>0?Math.min(100,Math.round(w.tot/w.obj*100)):0;
+                return(<div key={i} style={{marginBottom:i<stats.length-1?5:0}}>
+                  <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:1}}>
+                    <div style={{display:"flex",alignItems:"center",gap:4}}><span style={{fontSize:9,fontWeight:700,color:P.sub}}>S{w.num}</span>{w.daysIn&&w.daysIn<5&&<span style={{fontSize:8,color:P.dim}}>({w.daysIn}j)</span>}{w.v&&<ICheck size={8}/>}</div>
+                    <span style={{fontSize:9,fontWeight:600,color:P.muted}}>{m2h(w.tot)} <span style={{fontWeight:400,color:P.dim}}>/ {m2h(w.obj)}</span></span>
+                  </div>
+                  <div style={{height:2,borderRadius:1,background:P.card,overflow:"hidden"}}><div style={{height:"100%",borderRadius:1,background:col,width:`${pc}%`,transition:"width .4s"}}/></div>
+                </div>);
+              })}
+            </div>}
           </div>
+
+          {/* Derniers relevés (accordéon fermé) */}
+          <div style={{...GL,borderRadius:20,padding:"14px 18px",marginBottom:10}}>
+            <button onClick={()=>setRelOpen(!relOpen)} style={{width:"100%",background:"none",border:"none",cursor:"pointer",display:"flex",justifyContent:"space-between",alignItems:"center",padding:0,WebkitTapHighlightColor:"transparent"}}>
+              <div style={{display:"flex",alignItems:"center",gap:6}}><IDoc size={16}/><span style={{fontSize:13,fontWeight:700,color:P.text}}>Derniers relevés</span></div>
+              <span style={{color:P.sub,fontSize:14,transform:relOpen?"rotate(180deg)":"none",transition:"transform .2s"}}>▾</span>
+            </button>
+            {relOpen&&<div style={{marginTop:12}}>
+              {archList.length===0&&<div style={{color:P.muted,fontSize:12,textAlign:"center",padding:12}}>Aucun relevé</div>}
+              {archList.slice(0,3).map(({cle:c,data:d})=>{
+                const wt=d.jours.reduce((s,j)=>j.absence?s:s+cNet(j.arrivee,j.depart,pr),0);
+                const al=getLunCle(c);const av=new Date(al.getTime()+4*MS_DAY);
+                return(<button key={c} onClick={()=>setArch({cle:c,data:d})} style={{...st.archI,marginBottom:6}}>
+                  <div style={{display:"flex",alignItems:"center",gap:10,flex:1}}>
+                    <span style={{fontSize:11,fontWeight:700,color:P.teal,minWidth:28}}>S{parseInt(c.split("-S")[1])}</span>
+                    <span style={{fontSize:11,color:P.sub}}>{fC(al)} – {fC(av)}</span>
+                  </div>
+                  <div style={{display:"flex",alignItems:"center",gap:6}}>
+                    <span style={{fontSize:13,fontWeight:700,color:P.text}}>{m2h(wt)}</span>
+                    {d.valide&&<ICheck size={10}/>}
+                  </div>
+                </button>);
+              })}
+              {archList.length>3&&<div style={{textAlign:"center",paddingTop:6}}>
+                {archList.slice(3).map(({cle:c,data:d})=>{
+                  const wt=d.jours.reduce((s,j)=>j.absence?s:s+cNet(j.arrivee,j.depart,pr),0);
+                  const al=getLunCle(c);const av=new Date(al.getTime()+4*MS_DAY);
+                  return(<button key={c} onClick={()=>setArch({cle:c,data:d})} style={{...st.archI,marginBottom:6}}>
+                    <div style={{display:"flex",alignItems:"center",gap:10,flex:1}}>
+                      <span style={{fontSize:11,fontWeight:700,color:P.teal,minWidth:28}}>S{parseInt(c.split("-S")[1])}</span>
+                      <span style={{fontSize:11,color:P.sub}}>{fC(al)} – {fC(av)}</span>
+                    </div>
+                    <div style={{display:"flex",alignItems:"center",gap:6}}>
+                      <span style={{fontSize:13,fontWeight:700,color:P.text}}>{m2h(wt)}</span>
+                      {d.valide&&<ICheck size={10}/>}
+                    </div>
+                  </button>);
+                })}
+              </div>}
+            </div>}
+          </div>
+
+          {/* Aide & Notice (sections repliables indépendantes) */}
+          <div style={{...GL,borderRadius:20,padding:"14px 18px",marginBottom:10}}>
+            <button onClick={()=>setAideOpen(!aideOpen)} style={{width:"100%",background:"none",border:"none",cursor:"pointer",display:"flex",justifyContent:"space-between",alignItems:"center",padding:0,WebkitTapHighlightColor:"transparent"}}>
+              <div style={{display:"flex",alignItems:"center",gap:6}}>
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke={P.teal} strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="M2 3h6a4 4 0 0 1 4 4v14a3 3 0 0 0-3-3H2z"/><path d="M22 3h-6a4 4 0 0 0-4 4v14a3 3 0 0 1 3-3h7z"/></svg>
+                <span style={{fontSize:13,fontWeight:700,color:P.text}}>Aide & Notice</span>
+              </div>
+              <span style={{color:P.sub,fontSize:14,transform:aideOpen?"rotate(180deg)":"none",transition:"transform .2s"}}>▾</span>
+            </button>
+            {aideOpen&&<div style={{marginTop:10}}>
+              {[
+                {id:"usage",t:"Utilisation",c:<>
+                  <div style={{marginBottom:4}}>Chaque jour, saisissez votre heure d'arrivée et de départ. Tapez les chiffres directement (ex: 0830 → 08:30).</div>
+                  <div style={{marginBottom:4}}>Le pointage rapide enregistre l'heure exacte en un tap. Les pauses sont déduites automatiquement selon vos réglages.</div>
+                  <div style={{marginBottom:4,fontWeight:600,color:P.text,marginTop:6}}>Validation</div>
+                  <div style={{marginBottom:4}}>En fin de semaine, vérifiez vos heures puis tapez "Valider et envoyer". La semaine est verrouillée. Vous pouvez la déverrouiller pour modifier puis revalider.</div>
+                  <div style={{color:P.orange,fontWeight:600}}>Seul le relevé validé et transmis à l'employeur fait foi.</div>
+                </>},
+                {id:"abs",t:"Absences & demi-journées",c:<>
+                  <div style={{marginBottom:6}}>Activez "Absence" sur le jour concerné, choisissez le motif et sélectionnez journée complète ou demi-journée.</div>
+                  <div style={{marginBottom:4,fontWeight:600,color:P.text}}>Motifs disponibles</div>
+                  <div style={{marginBottom:4}}>Congé payé · Jour férié · Maladie · Sans solde · Autre (texte libre).</div>
+                  <div style={{marginBottom:4,padding:"8px 10px",borderRadius:10,background:P.tealDim}}>
+                    <span style={{fontWeight:600,color:P.teal}}>Comment ça marche</span><br/>
+                    <span style={{fontSize:11}}>Toute absence réduit l'objectif de la semaine. Seules les heures réellement travaillées sont comptées. Aucune heure fictive n'est ajoutée au compteur.</span></div>
+                  <div style={{marginBottom:4,fontWeight:600,color:P.text,marginTop:6}}>Demi-journée</div>
+                  <div style={{marginBottom:4}}>Saisissez les horaires de la demi-journée travaillée (arrivée/départ). L'autre demi-journée est couverte par l'absence.</div>
+                  <div style={{padding:"8px 10px",borderRadius:10,background:"rgba(255,255,255,.04)"}}>
+                    <span style={{fontWeight:600,color:P.muted}}>Valorisation CYFAC (PDF uniquement)</span><br/>
+                    <span style={{fontSize:11}}>Les CP et jours fériés sont mentionnés sur le PDF à leur valeur CYFAC (8h/4h pour un 39h · 7h/3h30 pour un 35h). Cette mention est purement informative pour la comptabilité. Le compteur interne utilise le temps contractuel (7h48 ou 7h par jour).</span></div>
+                </>},
+                {id:"cpt",t:"Compteur de report",c:<>
+                  <div style={{marginBottom:4}}>L'écart entre vos heures travaillées et l'objectif ajusté est reporté d'une semaine à l'autre.</div>
+                  <div style={{marginBottom:4}}>Plafonds : ±3h par semaine, ±6h en cumul global.</div>
+                  <div style={{marginBottom:4,padding:"8px 10px",borderRadius:10,background:"rgba(255,255,255,.04)",fontSize:11}}>
+                    <strong>Exemple (39h) :</strong> Semaine à 40h sans absence → objectif 39h → écart +1h → compteur passe de 0 à +1h.<br/>
+                    <strong>Avec 1 CP :</strong> 32h travaillées → objectif réduit à 31h12 (4 jours) → écart +0h48 → reporté au compteur.</div>
+                  <div>Le compteur est recalculé automatiquement en cas de modification, suppression ou restauration d'un relevé.</div>
+                </>},
+                {id:"cheval",t:"Semaines à cheval",c:<>
+                  <div style={{marginBottom:4}}>Quand une semaine chevauche deux mois (ex: S27 = 29 juin – 3 juillet), l'application le gère automatiquement.</div>
+                  <div style={{marginBottom:4,fontWeight:600,color:P.text}}>Statistiques mensuelles</div>
+                  <div style={{marginBottom:4}}>Chaque jour est comptabilisé dans son mois réel. Les heures et l'objectif sont calculés jour par jour.</div>
+                  <div style={{marginBottom:4,fontWeight:600,color:P.text}}>PDF partiels</div>
+                  <div>Pour l'envoi anticipé (clôture de mois), un bouton "PDF clôture" permet de générer un relevé partiel contenant uniquement les jours du mois concerné, sans attendre la fin de semaine.</div>
+                </>},
+                {id:"sav",t:"Sauvegarde & restauration",c:<>
+                  <div style={{marginBottom:4}}>Effectuez une sauvegarde régulière (minimum 1 fois par mois) depuis le tableau de bord. Le fichier JSON contient l'ensemble de vos données.</div>
+                  <div style={{marginBottom:4}}>Conservez-le dans iCloud Drive (iPhone) ou Google Drive (Android).</div>
+                  <div>Pour restaurer : depuis l'écran d'accueil, tapez "Restaurer une sauvegarde" et sélectionnez le fichier. Le compteur et toutes les semaines sont recalculés automatiquement.</div>
+                </>},
+                {id:"priv",t:"Confidentialité & RGPD",c:<>
+                  <div style={{marginBottom:4}}>Vos données sont stockées exclusivement sur votre appareil (localStorage). Aucune donnée n'est transmise à un serveur. Aucun compte, aucun cookie, aucune collecte analytique.</div>
+                  <div style={{marginBottom:4}}>Le motif "Maladie" (donnée de santé, art. 9 RGPD) est traité sur base légale. Seul le motif générique est enregistré, sans indication sur la pathologie.</div>
+                  <div><button onClick={()=>setPrivOpen(true)} style={{background:"none",border:"none",color:P.teal,fontSize:12,fontWeight:600,cursor:"pointer",padding:0}}>Voir la notice complète ›</button></div>
+                </>},
+                {id:"new",t:"Nouveautés V2",c:<>
+                  {["Compteur de report automatique (±3h/semaine, ±6h cumul)","Demi-journées d'absence","Verrouillage et déverrouillage des relevés","Semaines à cheval gérées dans les statistiques","PDF partiels pour clôture de mois","Moteur unique : seules les heures réelles comptent","Valorisation CYFAC informative sur le PDF","Notice utilisateur et confidentialité RGPD","Guide structuré avec sections repliables"].map((item,i)=>(
+                    <div key={i} style={{display:"flex",gap:6,alignItems:"center",lineHeight:1.6}}><span style={{color:P.teal,flexShrink:0}}>✓</span><span>{item}</span></div>
+                  ))}
+                </>}
+              ].map(s=>(
+                <div key={s.id} style={{borderBottom:`1px solid ${P.border}`}}>
+                  <button onClick={()=>toggleAide(s.id)} style={{width:"100%",background:"none",border:"none",cursor:"pointer",display:"flex",justifyContent:"space-between",alignItems:"center",padding:"9px 0",WebkitTapHighlightColor:"transparent"}}>
+                    <span style={{fontSize:12,fontWeight:600,color:aideSec[s.id]?P.teal:P.sub}}>{s.t}</span>
+                    <span style={{color:P.dim,fontSize:11,transform:aideSec[s.id]?"rotate(180deg)":"none",transition:"transform .2s"}}>▾</span>
+                  </button>
+                  {aideSec[s.id]&&<div style={{fontSize:11,color:P.sub,lineHeight:1.7,paddingBottom:10}}>{s.c}</div>}
+                </div>
+              ))}
+            </div>}
+          </div>
+
+          {/* Sauvegarde des données (accordéon fermé) */}
+          <div style={{...GL,borderRadius:20,padding:"14px 18px",marginBottom:10}}>
+            <button onClick={()=>setSavOpen(!savOpen)} style={{width:"100%",background:"none",border:"none",cursor:"pointer",display:"flex",justifyContent:"space-between",alignItems:"center",padding:0,WebkitTapHighlightColor:"transparent"}}>
+              <div style={{display:"flex",alignItems:"center",gap:6}}>
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke={P.teal} strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
+                <span style={{fontSize:13,fontWeight:700,color:P.text}}>Sauvegarde des données</span>
+                {!lastBackup&&<div style={{width:6,height:6,borderRadius:3,background:P.orange,marginLeft:2}}/>}
+              </div>
+              <span style={{color:P.sub,fontSize:14,transform:savOpen?"rotate(180deg)":"none",transition:"transform .2s"}}>▾</span>
+            </button>
+            {savOpen&&<div style={{marginTop:12}}>
+              <div style={{display:"flex",alignItems:"center",gap:6,padding:"6px 10px",borderRadius:10,background:lastBackup?P.tealDim:"rgba(251,191,36,.08)",marginBottom:10}}>
+                <div style={{width:6,height:6,borderRadius:3,background:lastBackup?P.teal:P.orange}}/>
+                <div style={{fontSize:10,color:lastBackup?P.teal:P.orange}}>{lastBackup?`Dernière : ${new Date(lastBackup).toLocaleDateString("fr-FR")} à ${new Date(lastBackup).toLocaleTimeString("fr-FR",{hour:"2-digit",minute:"2-digit"})}`:"Aucune sauvegarde"}</div>
+              </div>
+              <div style={{display:"flex",gap:8}}>
+                <button onClick={exporter} style={{...st.cta,flex:1,height:38,fontSize:12}}>Sauvegarder</button>
+                <button onClick={restaurer} style={{...st.sec,flex:1,fontSize:11,padding:"8px 12px"}}>Restaurer</button>
+              </div>
+              <div style={{fontSize:10,color:P.muted,lineHeight:1.5,textAlign:"center",marginTop:8}}>{/iPhone|iPad|iPod/.test(navigator.userAgent)?"Conservez vos sauvegardes dans iCloud Drive.":/Android/.test(navigator.userAgent)?"Conservez vos sauvegardes dans Google Drive.":"Conservez dans iCloud Drive ou Google Drive."}</div>
+            </div>}
+          </div>
+
+          {/* Nouveautés — supprimé, intégré dans Aide */}
+
+          {/* Confidentialité (overlay) */}
+          {privOpen&&<div style={{position:"fixed",inset:0,zIndex:200,display:"flex",alignItems:"center",justifyContent:"center",padding:16,background:"rgba(0,0,0,.6)",backdropFilter:"blur(8px)",WebkitBackdropFilter:"blur(8px)"}}>
+            <div style={{...GL,borderRadius:28,padding:24,maxWidth:380,width:"100%",maxHeight:"85vh",overflow:"auto"}}>
+              <div style={{fontSize:18,fontWeight:800,color:P.text,marginBottom:4}}>Confidentialité & données</div>
+              <div style={{fontSize:11,color:P.muted,marginBottom:16}}>Mon Relevé v{VERSION}</div>
+              <div style={{fontSize:12,color:P.sub,lineHeight:1.7}}>
+                <div style={{fontWeight:700,color:P.teal,fontSize:13,marginBottom:6}}>Responsable du traitement</div>
+                <div style={{marginBottom:12}}>{pr.entreprise||"Votre entreprise"}, dans le cadre du suivi du temps de travail prévu par l'article L.3171-2 du Code du travail.</div>
+                <div style={{fontWeight:700,color:P.text,marginBottom:4}}>Données collectées</div>
+                <div style={{marginBottom:4,padding:"8px 10px",borderRadius:10,background:P.tealDim}}>
+                  Nom, prénom, type de contrat, horaires d'arrivée et de départ, motifs d'absence (congé payé, férié, maladie, sans solde, autre), notes de semaine.</div>
+                <div style={{marginBottom:12}}>Ces données sont strictement nécessaires à l'établissement du relevé d'heures hebdomadaire.</div>
+                <div style={{fontWeight:700,color:P.text,marginBottom:4}}>Stockage</div>
+                <div style={{marginBottom:4}}>Toutes vos données sont stockées exclusivement sur votre appareil (localStorage du navigateur). Aucune donnée n'est transmise à un serveur distant.</div>
+                <div style={{marginBottom:12,padding:"8px 10px",borderRadius:10,background:"rgba(255,255,255,.04)",fontSize:11}}>
+                  <strong>Concrètement :</strong> aucun compte utilisateur, aucune base de données en ligne, aucun cookie de suivi, aucune collecte analytique.</div>
+                <div style={{fontWeight:700,color:P.text,marginBottom:4}}>Transmission</div>
+                <div style={{marginBottom:12}}>Le relevé PDF est généré localement et partagé manuellement par le salarié à la direction, conformément à l'obligation de contrôle de la durée du travail.</div>
+                <div style={{fontWeight:700,color:P.text,marginBottom:4}}>Données de santé</div>
+                <div style={{marginBottom:12}}>Le motif "Maladie" constitue une donnée de santé au sens de l'article 9 du RGPD. Son traitement est justifié par l'obligation légale de suivi du temps de travail. Seul le motif générique est enregistré, sans indication sur la nature de la pathologie.</div>
+                <div style={{fontWeight:700,color:P.text,marginBottom:4}}>Connexions réseau</div>
+                <div style={{marginBottom:12}}>Au chargement initial, l'application contacte GitHub Pages (hébergement) et unpkg.com (bibliothèques techniques). Ces services peuvent enregistrer votre adresse IP. Une fois en cache, l'application fonctionne hors ligne.</div>
+                <div style={{fontWeight:700,color:P.text,marginBottom:4}}>Vos droits</div>
+                <div style={{marginBottom:12}}>Conformément au RGPD, vous disposez d'un droit d'accès, de rectification et de suppression de vos données. Vos données étant stockées sur votre appareil, vous pouvez les consulter (export JSON), les modifier ou les supprimer à tout moment directement depuis l'application.</div>
+                <div style={{fontWeight:700,color:P.text,marginBottom:4}}>Durée de conservation</div>
+                <div style={{marginBottom:4}}>Les données sont conservées sur votre appareil tant que vous ne les supprimez pas. Il est recommandé de conserver les relevés au minimum 3 ans (prescription légale en matière de durée du travail, art. L.3245-1 du Code du travail).</div>
+              </div>
+              <button onClick={()=>setPrivOpen(false)} style={{...st.sec,width:"100%",marginTop:16}}>Fermer</button>
+            </div>
+          </div>}
         </>)}
       </div>
 
-      {tab==="heures"&&hasD&&<div style={st.fCTA}><button onClick={valider} style={{...st.cta,width:"100%"}}>Valider et envoyer</button></div>}
+      {tab==="heures"&&hasD&&!wd.valide&&<div style={st.fCTA}>
+        {lun.getMonth()!==ven.getMonth()&&<button onClick={()=>{setPdfMois({m:lun.getMonth(),y:lun.getFullYear()});setPop(true);}} style={{...st.sec,width:"100%",marginBottom:8,fontSize:12}}>PDF clôture {MOIS[lun.getMonth()]}</button>}
+        <button onClick={valider} style={{...st.cta,width:"100%"}}>Valider et envoyer</button>
+      </div>}
 
       {/* Tab bar with active green bg */}
       <div style={st.tabBar}>
         <div style={st.tabIn}>
-          {[{id:"heures",l:"Heures"},{id:"absences",l:"Absences"},{id:"historique",l:"Historique"}].map(t=>(
+          {[{id:"heures",l:"Heures"},{id:"absences",l:"Absences"},{id:"historique",l:"Tableau de bord"}].map(t=>(
             <button key={t.id} onClick={()=>setTab(t.id)} style={{...st.tabB,...(tab===t.id?st.tabA:{})}}>
               {t.id==="heures"&&<IClock color={tab===t.id?P.teal:P.muted} size={20}/>}
               {t.id==="absences"&&<ICalX color={tab===t.id?P.teal:P.muted} size={20}/>}
@@ -575,7 +914,7 @@ const st={
   chip:{padding:"5px 12px",borderRadius:999,border:`1px solid ${P.border}`,background:"rgba(255,255,255,.04)",color:P.sub,fontSize:12,fontWeight:500,cursor:"pointer",transition:TR},
   punchBtn:{width:28,height:28,borderRadius:14,...GL,border:`1.5px solid ${P.teal}40`,cursor:"pointer",display:"flex",alignItems:"center",justifyContent:"center",fontSize:14,color:P.teal,padding:0,transition:TR},
   mP:{padding:"8px 14px",borderRadius:999,border:"none",background:"rgba(255,255,255,.06)",color:P.text,fontSize:12,fontWeight:500,cursor:"pointer",textAlign:"center",transition:TR},
-  archI:{width:"100%",display:"flex",alignItems:"center",padding:"14px 18px",...GL,borderRadius:20,marginBottom:10,cursor:"pointer",textAlign:"left",transition:TR},
+  archI:{width:"100%",display:"flex",alignItems:"center",padding:"10px 14px",...GL,borderRadius:16,marginBottom:6,cursor:"pointer",textAlign:"left",transition:TR},
   cta:{padding:"0 28px",borderRadius:999,border:"none",background:`linear-gradient(135deg, ${P.sky}, ${P.teal})`,backgroundImage:`linear-gradient(180deg, rgba(255,255,255,.15), transparent), linear-gradient(135deg, ${P.sky}, ${P.teal})`,color:P.bg,fontSize:14,fontWeight:700,cursor:"pointer",textAlign:"center",height:48,display:"flex",alignItems:"center",justifyContent:"center",boxShadow:"0 8px 24px rgba(45,212,168,.20)",letterSpacing:.3,transition:TR},
   sec:{padding:"12px 16px",borderRadius:16,border:`1px solid ${P.glassBorder}`,background:"rgba(255,255,255,.05)",color:P.text,fontSize:13,fontWeight:500,cursor:"pointer",textAlign:"center",transition:TR},
   fCTA:{position:"fixed",bottom:110,left:0,right:0,padding:"0 90px",zIndex:40,maxWidth:520,margin:"0 auto"},
