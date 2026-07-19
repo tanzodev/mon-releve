@@ -42,18 +42,18 @@ const { useState, useEffect, useCallback, useMemo, useRef } = React;
 
 /*
  * ╔═══════════════════════════════════════════════╗
- * ║  MON RELEVÉ — v2.0                            ║
+ * ║  MON RELEVÉ — v2.4                            ║
  * ║  Compteur report · PDF · Absences valorisées  ║
  * ╚═══════════════════════════════════════════════╝
  */
-const VERSION = "2.0";
+const VERSION = "2.4";
 const REPORT_WEEK_CAP = 180; // ±3h en minutes
 const REPORT_GLOBAL_CAP = 360; // ±6h en minutes
 const MOTIFS_VALORISES = ["Congé payé","Férié"];
-function objJour(ct){return ct==="CDI — 39h"?468:420;} // objectif journalier travaillé : 7h48 ou 7h
-function absAffJour(ct){return ct==="CDI — 39h"?480:420;} // valorisation CYFAC : 8h ou 7h (PDF uniquement)
+function objJour(ct){return ct==="CDI — 39h"?468:420;} // 7h48 ou 7h — temps contractuel journalier
+function absAffJour(ct){return ct==="CDI — 39h"?480:420;} // valorisation CYFAC PDF : 8h ou 7h
 function calcReport(jours,contrat,cfg){
-  const objM=(H_OBJ[contrat]||DEF_OBJ)*60;const dv=objJour(contrat);const dvAbs=absAffJour(contrat);
+  const objM=(H_OBJ[contrat]||DEF_OBJ)*60;const dv=objJour(contrat);const dvP=absAffJour(contrat);
   let travaille=0,neutre=0,valorisePDF=0;
   jours.forEach(j=>{
     if(!j.absence){travaille+=cNet(j.arrivee,j.depart,cfg);}
@@ -61,9 +61,10 @@ function calcReport(jours,contrat,cfg){
       const mult=j.demiJournee?0.5:1;
       if(j.demiJournee){travaille+=cNet(j.arrivee,j.depart,cfg);}
       neutre+=Math.round(dv*mult);
-      if(MOTIFS_VALORISES.includes(j.motif)){valorisePDF+=Math.round(dvAbs*mult);}
+      if(MOTIFS_VALORISES.includes(j.motif)){valorisePDF+=Math.round(dvP*mult);}
     }
   });
+  if(valorisePDF>objM)valorisePDF=objM;
   const objAjuste=objM-neutre;const total=travaille;const ecart=total-objAjuste;
   return{travaille,valorise:0,neutre,objAjuste,total,ecart,valorisePDF};
 }
@@ -255,6 +256,7 @@ window.MonReleve=function MonReleve(){
   const[privOpen,setPrivOpen]=useState(false);
   const[savOpen,setSavOpen]=useState(false);
   const[pdfMois,setPdfMois]=useState(null);
+  const[updatePop,setUpdatePop]=useState(()=>{try{const seen=localStorage.getItem(`${PX}seen_v`);return seen!==VERSION;}catch{return false;}});
   const[lastBackup,setLastBackup]=useState(()=>{try{return localStorage.getItem(`${PX}last_backup`)||null;}catch{return null;}});
 
   const{s:sem,l:lun}=semOff(off);
@@ -375,7 +377,7 @@ window.MonReleve=function MonReleve(){
         <div style={{display:"flex",justifyContent:"space-between",background:"#EFF6FF",margin:"4px -14px 0",padding:"10px 14px",borderBottom:`2px solid #1E40AF`}}>
           <span style={{fontSize:11,fontWeight:800,color:"#1E40AF"}}>TOTAL RELEVÉ (valorisation RH)</span><span style={{fontSize:16,fontWeight:800,color:"#1E40AF"}}>{m2h(totalRH)}</span>
         </div>
-        {vp>0&&<div style={{fontSize:8,color:pk.muted,padding:"4px 0",fontStyle:"italic"}}>La valorisation CYFAC (CP/Férié = {pr.contrat==="CDI — 39h"?"8h":"7h"}/jour) est informative. Le compteur ci-dessous utilise le temps contractuel ({pr.contrat==="CDI — 39h"?"7h48":"7h"}/jour).</div>}
+        {vp>0&&<div style={{fontSize:8,color:pk.muted,padding:"4px 0",fontStyle:"italic"}}>Valorisation CP/Férié : {pr.contrat==="CDI — 39h"?"7h48":"7h"}/jour ({pr.contrat==="CDI — 39h"?"39h":"35h"}/semaine, règle CYFAC).</div>}
         <div style={{marginTop:6,paddingTop:6,borderTop:`1px solid #DBEAFE`}}>
           <div style={{fontWeight:700,marginBottom:6,color:"#1E40AF",fontSize:10}}>Compteur de report (temps contractuel)</div>
           <div style={{display:"flex",justifyContent:"space-between",padding:"3px 0"}}><span style={{fontSize:9,color:pk.muted}}>Objectif contractuel</span><span style={{fontSize:9,color:pk.muted}}>{m2h(objC)}</span></div>
@@ -651,8 +653,14 @@ window.MonReleve=function MonReleve(){
 
         {/* ── TAB ABSENCES ── */}
         {tab==="absences"&&(<>
-          <p style={{fontSize:12,color:P.sub,marginBottom:12}}>Sélectionnez les jours d'absence.</p>
-          {wd.jours.map((j,i)=>(<div key={i} style={{...st.dc,padding:"12px 14px"}}>
+          {wd.valide?<div style={{...GL,borderRadius:16,padding:"14px 16px",marginBottom:10}}>
+            <div style={{fontSize:12,fontWeight:600,color:P.teal}}>✓ Semaine validée</div>
+            <div style={{fontSize:10,color:P.sub,marginTop:2}}>Les absences sont verrouillées avec le relevé.</div>
+          </div>:<>
+            <button onClick={()=>{const nj=wd.jours.map(j=>({...j,absence:true,motif:"Congé payé",demiJournee:false,arrivee:"",depart:""}));sv({...wd,jours:nj});flash("Semaine CP complète");}} style={{...st.cta,width:"100%",marginBottom:12,background:"linear-gradient(135deg,#059669,#2DD4A8)",fontSize:14,fontWeight:700}}>Semaine complète de CP</button>
+            <p style={{fontSize:12,color:P.sub,marginBottom:12}}>Ou sélectionnez les jours individuellement :</p>
+          </>}
+          {wd.jours.map((j,i)=>(<div key={i} style={{...st.dc,padding:"12px 14px",opacity:wd.valide?.6:1,pointerEvents:wd.valide?"none":"auto"}}>
             <label style={{display:"flex",alignItems:"center",gap:12,cursor:"pointer"}}>
               <input type="checkbox" checked={j.absence} onChange={e=>mj(i,"absence",e.target.checked)} style={{width:20,height:20,accentColor:P.teal,flexShrink:0}}/>
               <span style={{fontWeight:600,fontSize:14,color:P.text}}>{JOURS[i]}</span>
@@ -773,17 +781,15 @@ window.MonReleve=function MonReleve(){
                   <div style={{color:P.orange,fontWeight:600}}>Seul le relevé validé et transmis à l'employeur fait foi.</div>
                 </>},
                 {id:"abs",t:"Absences & demi-journées",c:<>
-                  <div style={{marginBottom:6}}>Activez "Absence" sur le jour concerné, choisissez le motif et sélectionnez journée complète ou demi-journée.</div>
-                  <div style={{marginBottom:4,fontWeight:600,color:P.text}}>Motifs disponibles</div>
-                  <div style={{marginBottom:4}}>Congé payé · Jour férié · Maladie · Sans solde · Autre (texte libre).</div>
+                  <div style={{marginBottom:6}}>Activez "Absence" sur le jour concerné, ou utilisez le bouton "Semaine complète de CP" pour marquer les 5 jours d'un tap.</div>
                   <div style={{marginBottom:4,padding:"8px 10px",borderRadius:10,background:P.tealDim}}>
-                    <span style={{fontWeight:600,color:P.teal}}>Comment ça marche</span><br/>
-                    <span style={{fontSize:11}}>Toute absence réduit l'objectif de la semaine. Seules les heures réellement travaillées sont comptées. Aucune heure fictive n'est ajoutée au compteur.</span></div>
+                    <span style={{fontWeight:600,color:P.teal}}>Fonctionnement</span><br/>
+                    <span style={{fontSize:11}}>Toute absence réduit l'objectif. Seules les heures travaillées comptent. L'onglet Absences est verrouillé après validation.</span></div>
                   <div style={{marginBottom:4,fontWeight:600,color:P.text,marginTop:6}}>Demi-journée</div>
-                  <div style={{marginBottom:4}}>Saisissez les horaires de la demi-journée travaillée (arrivée/départ). L'autre demi-journée est couverte par l'absence.</div>
+                  <div style={{marginBottom:4}}>Saisissez les horaires de la demi-journée travaillée. L'autre demi-journée est couverte par l'absence.</div>
                   <div style={{padding:"8px 10px",borderRadius:10,background:"rgba(255,255,255,.04)"}}>
-                    <span style={{fontWeight:600,color:P.muted}}>Valorisation CYFAC (PDF uniquement)</span><br/>
-                    <span style={{fontSize:11}}>Les CP et jours fériés sont mentionnés sur le PDF à leur valeur CYFAC (8h/4h pour un 39h · 7h/3h30 pour un 35h). Cette mention est purement informative pour la comptabilité. Le compteur interne utilise le temps contractuel (7h48 ou 7h par jour).</span></div>
+                    <span style={{fontWeight:600,color:P.muted}}>Valorisation CYFAC (PDF)</span><br/>
+                    <span style={{fontSize:11}}>CP/Férié : 8h/jour · 4h/demi-journée (39h) · 7h/3h30 (35h). Semaine complète : 39h ou 35h (plafonnée). Informatif pour la comptabilité.</span></div>
                 </>},
                 {id:"cpt",t:"Compteur de report",c:<>
                   <div style={{marginBottom:4}}>L'écart entre vos heures travaillées et l'objectif ajusté est reporté d'une semaine à l'autre.</div>
@@ -811,7 +817,7 @@ window.MonReleve=function MonReleve(){
                   <div><button onClick={()=>setPrivOpen(true)} style={{background:"none",border:"none",color:P.teal,fontSize:12,fontWeight:600,cursor:"pointer",padding:0}}>Voir la notice complète ›</button></div>
                 </>},
                 {id:"new",t:"Nouveautés V2",c:<>
-                  {["Compteur de report automatique (±3h/semaine, ±6h cumul)","Demi-journées d'absence","Verrouillage et déverrouillage des relevés","Semaines à cheval gérées dans les statistiques","PDF partiels pour clôture de mois","Moteur unique : seules les heures réelles comptent","Valorisation CYFAC informative sur le PDF","Notice utilisateur et confidentialité RGPD","Guide structuré avec sections repliables"].map((item,i)=>(
+                  {["Compteur de report automatique (±3h/semaine, ±6h cumul)","Demi-journées d'absence","Bouton semaine complète de CP","Valorisation CYFAC conforme (8h/jour, 39h/semaine)","PDF partiels pour clôture de mois","Semaines à cheval gérées dans les statistiques","Moteur unique : seules les heures réelles comptent","Verrouillage des relevés et des absences","Guide structuré avec sections repliables","Notice confidentialité RGPD intégrée"].map((item,i)=>(
                     <div key={i} style={{display:"flex",gap:6,alignItems:"center",lineHeight:1.6}}><span style={{color:P.teal,flexShrink:0}}>✓</span><span>{item}</span></div>
                   ))}
                 </>}
@@ -888,6 +894,17 @@ window.MonReleve=function MonReleve(){
       {tab==="heures"&&hasD&&!wd.valide&&<div style={st.fCTA}>
         {lun.getMonth()!==ven.getMonth()&&<button onClick={()=>{setPdfMois({m:lun.getMonth(),y:lun.getFullYear()});setPop(true);}} style={{...st.sec,width:"100%",marginBottom:8,fontSize:12}}>PDF clôture {MOIS[lun.getMonth()]}</button>}
         <button onClick={valider} style={{...st.cta,width:"100%"}}>Valider et envoyer</button>
+      </div>}
+
+      {/* Popup mise à jour (une seule fois, tous onglets) */}
+      {updatePop&&<div style={{position:"fixed",inset:0,zIndex:210,display:"flex",alignItems:"center",justifyContent:"center",padding:16,background:"rgba(0,0,0,.6)",backdropFilter:"blur(8px)",WebkitBackdropFilter:"blur(8px)"}}>
+        <div style={{...GL,borderRadius:28,padding:24,maxWidth:340,width:"100%",textAlign:"center"}}>
+          <div style={{fontSize:18,fontWeight:800,color:P.text,marginBottom:4}}>Nouvelle mise à jour</div>
+          <div style={{fontSize:13,color:P.teal,fontWeight:600,marginBottom:12}}>Version {VERSION}</div>
+          <div style={{fontSize:12,color:P.sub,marginBottom:16,lineHeight:1.6}}>Mon Relevé a été mis à jour avec de nouvelles fonctionnalités.</div>
+          <button onClick={()=>{setUpdatePop(false);try{localStorage.setItem(`${PX}seen_v`,VERSION);}catch{};setTab("historique");setAideOpen(true);setAideSec(s=>({...s,new:true}));}} style={{...st.cta,width:"100%",marginBottom:8}}>Voir les nouveautés</button>
+          <button onClick={()=>{setUpdatePop(false);try{localStorage.setItem(`${PX}seen_v`,VERSION);}catch{}}} style={{...st.sec,width:"100%"}}>Fermer</button>
+        </div>
       </div>}
 
       {/* Tab bar with active green bg */}
